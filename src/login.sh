@@ -41,12 +41,6 @@ log "=== IISERB Autologin started (PID $$) ==="
 while true; do
     load_config
 
-    if [ -z "$USERNAME" ] || [ -z "$PASSWORD" ]; then
-        log "Credentials not configured yet. Please open IISERB Login app to set credentials."
-        sleep 30
-        continue
-    fi
-
     # --- Online check ---
     if ping -c 1 -W 2 "$PING_TARGET" > /dev/null 2>&1; then
         sleep "${CHECK_INTERVAL:-60}"
@@ -58,11 +52,38 @@ while true; do
     # Clear old cookies before a fresh attempt
     rm -f "$COOKIE_JAR"
 
-    # Fetch probe URL including headers (-i) to catch 302 Location redirect
-    HEADERS_AND_BODY=$(curl -k -s -i --connect-timeout 8 "$PROBE_URL" 2>/dev/null)
+    # Step 0: Obtain magic challenge token using forced IPv4 (-4) across multiple probe endpoints
+    MAGIC=""
+    for PROBE in "$PROBE_URL" "http://connectivity-check.ubuntu.com/" "http://detectportal.firefox.com/success.txt" "http://neverssl.com" "http://1.1.1.1"; do
+        HEADERS_AND_BODY=$(curl -4 -k -s -i --connect-timeout 4 "$PROBE" 2>/dev/null)
+        MAGIC=$(echo "$HEADERS_AND_BODY" | grep -oE 'fgtauth\?[a-f0-9]{16,32}' | head -1 | cut -d'?' -f2)
+        if [ -n "$MAGIC" ]; then
+            break
+        fi
+    done
 
-    # Try to extract magic token from: Location header OR page body
-    MAGIC=$(echo "$HEADERS_AND_BODY" | grep -oE 'fgtauth\?[a-f0-9]{16,32}' | head -1 | cut -d'?' -f2)
+    # If FortiGate dropped the session and is blackholing requests, bounce the interface link to prompt the gateway
+    if [ -z "$MAGIC" ]; then
+        IFACE=$(ip route show default 2>/dev/null | awk '{print $5}' | head -n 1)
+        if [ -z "$IFACE" ]; then
+            IFACE="enp4s0"
+        fi
+        log "No challenge token found. Refreshing network interface ($IFACE) to prompt gateway..."
+        if command -v nmcli >/dev/null 2>&1; then
+            nmcli dev disconnect "$IFACE" >/dev/null 2>&1
+            sleep 1
+            nmcli dev connect "$IFACE" >/dev/null 2>&1
+            sleep 2
+            # Re-probe immediately
+            for PROBE in "$PROBE_URL" "http://connectivity-check.ubuntu.com/" "http://detectportal.firefox.com/success.txt"; do
+                HEADERS_AND_BODY=$(curl -4 -k -s -i --connect-timeout 4 "$PROBE" 2>/dev/null)
+                MAGIC=$(echo "$HEADERS_AND_BODY" | grep -oE 'fgtauth\?[a-f0-9]{16,32}' | head -1 | cut -d'?' -f2)
+                if [ -n "$MAGIC" ]; then
+                    break
+                fi
+            done
+        fi
+    fi
 
     if [ -z "$MAGIC" ]; then
         log "No magic token found in probe response. Retrying in 15s..."
@@ -73,10 +94,10 @@ while true; do
     log "Magic token: $MAGIC"
 
     # Step 1: Hit the fgtauth URL to initialise session and save cookies
-    curl -k -s -c "$COOKIE_JAR" --connect-timeout 8 "$GATEWAY/fgtauth?$MAGIC" > /dev/null
+    curl -4 -k -s -c "$COOKIE_JAR" --connect-timeout 8 "$GATEWAY/fgtauth?$MAGIC" > /dev/null
 
     # Step 2: POST credentials
-    RESPONSE=$(curl -k -s -L --connect-timeout 10 -X POST "$GATEWAY/" \
+    RESPONSE=$(curl -4 -k -s -L --connect-timeout 10 -X POST "$GATEWAY/" \
         -b "$COOKIE_JAR" -c "$COOKIE_JAR" \
         -H "Origin: $GATEWAY" \
         -H "Referer: $GATEWAY/fgtauth?$MAGIC" \
@@ -110,6 +131,7 @@ while true; do
 
             KEEPALIVE_COUNTER=$((KEEPALIVE_COUNTER + 1))
 
+            # Send keepalive request to FortiGate periodically
             INTERVAL_MINUTES=${KEEPALIVE_INTERVAL:-10}
             INTERVAL_CHECKS=$(( INTERVAL_MINUTES * 60 / ${CHECK_INTERVAL:-60} ))
             if [ "$INTERVAL_CHECKS" -le 0 ]; then

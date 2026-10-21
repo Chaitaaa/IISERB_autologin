@@ -48,6 +48,7 @@ def save_config(new_config: Dict[str, Any]) -> Tuple[bool, str]:
     """Save configuration to ~/.config/iiserb_login/config.json."""
     try:
         os.makedirs(CONFIG_DIR, exist_ok=True)
+        # Ensure values are typed appropriately
         cfg = load_config()
         cfg.update(new_config)
         cfg["CHECK_INTERVAL"] = int(cfg.get("CHECK_INTERVAL", 60))
@@ -84,6 +85,7 @@ def get_network_info() -> Dict[str, str]:
     try:
         res = subprocess.run(["ip", "route", "show", "default"], stdout=subprocess.PIPE, text=True, timeout=2)
         if res.returncode == 0 and res.stdout:
+            # default via 172.28.151.254 dev enp4s0 proto dhcp src 172.28.151.152
             line = res.stdout.strip()
             gw_m = re.search(r"default via ([\d\.]+)", line)
             dev_m = re.search(r"dev (\S+)", line)
@@ -103,6 +105,7 @@ def get_service_status() -> Dict[str, Any]:
     """Check systemd user service status."""
     status = {"active": False, "enabled": False, "status_text": "Stopped", "pid": None}
     try:
+        # Check active status
         res = subprocess.run(
             ["systemctl", "--user", "is-active", SERVICE_NAME],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=2
@@ -111,12 +114,14 @@ def get_service_status() -> Dict[str, Any]:
         status["active"] = is_active
         status["status_text"] = "Active (Running)" if is_active else "Inactive (Stopped)"
 
+        # Check enabled status
         res_en = subprocess.run(
             ["systemctl", "--user", "is-enabled", SERVICE_NAME],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=2
         )
         status["enabled"] = (res_en.stdout.strip() == "enabled")
 
+        # Get PID if active
         if is_active:
             res_show = subprocess.run(
                 ["systemctl", "--user", "show", "--property=MainPID", SERVICE_NAME],
@@ -147,46 +152,101 @@ def control_service(action: str) -> Tuple[bool, str]:
         return False, f"Exception: {e}"
 
 
-def perform_login() -> Tuple[bool, str]:
+def bounce_interface(interface: Optional[str] = None) -> Tuple[bool, str]:
+    """Bounce (reconnect) the network interface via NetworkManager to trigger a fresh captive portal challenge."""
+    try:
+        if not interface or interface == "Unknown":
+            net = get_network_info()
+            interface = net.get("interface", "enp4s0")
+        if not interface or interface == "Unknown":
+            return False, "Could not determine network interface."
+
+        subprocess.run(["nmcli", "dev", "disconnect", interface], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=4)
+        time.sleep(1)
+        res = subprocess.run(["nmcli", "dev", "connect", interface], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=6)
+        if res.returncode == 0:
+            return True, f"Interface {interface} reconnected successfully."
+        return False, f"nmcli returned exit code {res.returncode}"
+    except Exception as e:
+        return False, f"Failed to bounce interface: {e}"
+
+
+def get_magic_token(probe_url: str) -> Optional[str]:
     """
-    Perform manual captive portal login sequence.
+    Attempt to obtain captive portal challenge token from probe URL and common fallbacks.
+    Forces IPv4 (-4) to prevent IPv6 timeouts.
+    """
+    targets = [
+        probe_url,
+        "http://connectivity-check.ubuntu.com/",
+        "http://detectportal.firefox.com/success.txt",
+        "http://neverssl.com/",
+        "http://1.1.1.1/"
+    ]
+    seen = set()
+    for target in targets:
+        if not target or target in seen:
+            continue
+        seen.add(target)
+        try:
+            cmd = ["curl", "-4", "-k", "-s", "-i", "--connect-timeout", "4", target]
+            res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=5)
+            match = re.search(r"fgtauth\?([a-f0-9]{16,32})", res.stdout)
+            if match:
+                return match.group(1)
+        except Exception:
+            continue
+    return None
+
+
+def perform_login(auto_bounce: bool = True) -> Tuple[bool, str]:
+    """
+    Perform captive portal login sequence.
+    If the challenge token is not detected initially while offline,
+    automatically refreshes the interface link to prompt the FortiGate gateway.
     Returns (success, message).
     """
     cfg = load_config()
-    username = cfg.get("USERNAME", "").strip()
-    password = cfg.get("PASSWORD", "")
+    username = cfg["USERNAME"]
+    password = cfg["PASSWORD"]
     probe_url = cfg["PROBE_URL"]
     gateway = cfg["GATEWAY"]
     cookie_jar = cfg["COOKIE_JAR"]
 
-    if not username or not password:
-        return False, "Please enter your LDAP Username and Password in Settings first."
-
+    # 1. Clean cookie jar
     if os.path.exists(cookie_jar):
         try:
             os.remove(cookie_jar)
         except Exception:
             pass
 
+    # 2. Extract magic token with IPv4 probe
     try:
-        probe_cmd = ["curl", "-k", "-s", "-i", "--connect-timeout", "8", probe_url]
-        res = subprocess.run(probe_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=10)
-        output = res.stdout
+        magic = get_magic_token(probe_url)
 
-        magic_match = re.search(r"fgtauth\?([a-f0-9]{16,32})", output)
-        if not magic_match:
+        # If magic token not found and offline, auto-bounce interface link once
+        if not magic and auto_bounce:
+            is_on, lat = check_internet(cfg.get("PING_TARGET", "1.1.1.1"))
+            if is_on:
+                return True, f"Already online ({lat:.1f}ms latency). No login needed."
+
+            bounce_interface()
+            time.sleep(2)
+            magic = get_magic_token(probe_url)
+
+        if not magic:
             is_on, lat = check_internet(cfg.get("PING_TARGET", "1.1.1.1"))
             if is_on:
                 return True, f"Already online ({lat:.1f}ms latency). No captive portal challenge found."
-            return False, "Could not find captive portal magic token. Network might be down or unreachable."
+            return False, "Could not find captive portal magic token. Network gateway may be unreachable."
 
-        magic = magic_match.group(1)
-
-        init_cmd = ["curl", "-k", "-s", "-c", cookie_jar, "--connect-timeout", "8", f"{gateway}/fgtauth?{magic}"]
+        # 3. Step 1: Hit fgtauth tracking link and save cookies
+        init_cmd = ["curl", "-4", "-k", "-s", "-c", cookie_jar, "--connect-timeout", "8", f"{gateway}/fgtauth?{magic}"]
         subprocess.run(init_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10)
 
+        # 4. Step 2: POST credentials
         post_cmd = [
-            "curl", "-k", "-s", "-L", "--connect-timeout", "10", "-X", "POST", f"{gateway}/",
+            "curl", "-4", "-k", "-s", "-L", "--connect-timeout", "10", "-X", "POST", f"{gateway}/",
             "-b", cookie_jar, "-c", cookie_jar,
             "-H", f"Origin: {gateway}",
             "-H", f"Referer: {gateway}/fgtauth?{magic}",
@@ -198,19 +258,21 @@ def perform_login() -> Tuple[bool, str]:
         ]
         post_res = subprocess.run(post_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=12)
 
+        # Extract keepalive token if present
         keepalive_match = re.search(r"keepalive\?([a-f0-9]{16,32})", post_res.stdout)
         keepalive_token = keepalive_match.group(1) if keepalive_match else None
 
         time.sleep(3)
 
+        # 5. Verify internet connectivity
         online, latency = check_internet(cfg.get("PING_TARGET", "1.1.1.1"))
         if online:
             msg = f"Login successful for {username}! Connection verified ({latency:.1f}ms latency)."
             if keepalive_token:
-                msg += f" Keepalive token active."
+                msg += f" Keepalive token: {keepalive_token[:8]}..."
             return True, msg
         else:
-            return False, "Login submitted, but verification failed. Please double check credentials."
+            return False, "Login POST submitted, but internet verification failed. Please check credentials."
     except Exception as e:
         return False, f"Login error: {e}"
 
@@ -233,7 +295,7 @@ def read_logs(max_lines: int = 150) -> str:
     cfg = load_config()
     log_file = cfg.get("LOG_FILE", "/tmp/iiserb_autologin.log")
     if not os.path.exists(log_file):
-        return "(No logs yet. Logs will appear here once the service or login runs.)"
+        return "(No log file exists yet. Logs will appear here once the service or login runs.)"
     try:
         res = subprocess.run(["tail", "-n", str(max_lines), log_file], stdout=subprocess.PIPE, text=True, timeout=2)
         return res.stdout if res.stdout else "(Log file is empty)"
@@ -247,7 +309,7 @@ def clear_logs() -> bool:
     log_file = cfg.get("LOG_FILE", "/tmp/iiserb_autologin.log")
     try:
         with open(log_file, "w") as f:
-            f.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Log file cleared.\n")
+            f.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Log file cleared by user.\n")
         return True
     except Exception:
         return False

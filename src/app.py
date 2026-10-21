@@ -264,11 +264,18 @@ class IISERBLoginApp(ctk.CTk):
         )
         self.btn_manual_login.pack(side="left", expand=True, fill="x", padx=(0, 10))
 
+        self.btn_reconnect_lan = ctk.CTkButton(
+            act_btn_box, text="🔄 Reset LAN Link", height=38,
+            fg_color="gray30", hover_color="gray20",
+            command=self._handle_reconnect_lan
+        )
+        self.btn_reconnect_lan.pack(side="left", padx=(0, 10))
+
         self.btn_open_portal = ctk.CTkButton(
-            act_btn_box, text="🌐 Open Portal in Browser", height=38,
+            act_btn_box, text="🌐 Open Portal", height=38,
             command=self._open_portal_browser
         )
-        self.btn_open_portal.pack(side="left", expand=True, fill="x", padx=(0, 10))
+        self.btn_open_portal.pack(side="left", padx=(0, 10))
 
         self.btn_logout = ctk.CTkButton(
             act_btn_box, text="🚪 Logout", height=38,
@@ -636,6 +643,24 @@ class IISERBLoginApp(ctk.CTk):
 
             def finish():
                 self.btn_manual_login.configure(state="normal", text="🚀 Force Login Now")
+                self.lbl_action_msg.configure(
+                    text=msg, text_color="#10B981" if ok else "#EF4444"
+                )
+                self._update_network_status_worker()
+
+            self.after(0, finish)
+
+        threading.Thread(target=task, daemon=True).start()
+
+    def _handle_reconnect_lan(self):
+        self.btn_reconnect_lan.configure(state="disabled", text="⏳ Resetting...")
+        self.lbl_action_msg.configure(text="Refreshing network link via NetworkManager...", text_color="gray70")
+
+        def task():
+            ok, msg = backend.bounce_interface()
+
+            def finish():
+                self.btn_reconnect_lan.configure(state="normal", text="🔄 Reset LAN Link")
                 self.lbl_action_msg.configure(
                     text=msg, text_color="#10B981" if ok else "#EF4444"
                 )
