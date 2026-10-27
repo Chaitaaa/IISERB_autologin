@@ -2,25 +2,45 @@
 """
 IISER Bhopal Captive Portal Manager - Desktop Application
 Built with CustomTkinter for a modern, native Linux experience.
+Includes system tray minimization, desktop notifications, and first-run onboarding.
 """
 
 import os
 import sys
+
+# Ensure backend and cli can be imported
+APP_DIR = os.path.dirname(os.path.abspath(__file__))
+if APP_DIR not in sys.path:
+    sys.path.insert(0, APP_DIR)
+
+# Intercept CLI subcommands immediately BEFORE importing Tkinter or CustomTkinter
+# to enable 100% reliable execution in headless SSH or container environments.
+if len(sys.argv) > 1 and sys.argv[1] not in ["--gui", "-g"]:
+    import cli
+    sys.exit(cli.handle_cli(sys.argv[1:]))
+
+# Lazy load GUI modules
 import threading
 import time
 import webbrowser
 import subprocess
 from typing import Optional
 
-# Ensure backend can be imported
-APP_DIR = os.path.dirname(os.path.abspath(__file__))
-if APP_DIR not in sys.path:
-    sys.path.insert(0, APP_DIR)
-
 import customtkinter as ctk
 import backend
 
-# Set default appearance
+try:
+    import pystray
+    from PIL import Image, ImageTk
+    TRAY_AVAILABLE = True
+except ImportError:
+    TRAY_AVAILABLE = False
+    try:
+        from PIL import Image, ImageTk
+    except ImportError:
+        pass
+
+# Appearance configuration
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
 
@@ -30,16 +50,14 @@ class IISERBLoginApp(ctk.CTk):
         super().__init__()
 
         self.title("IISER Bhopal - Captive Portal Manager")
-        self.geometry("940x640")
-        self.minsize(860, 580)
+        self.geometry("920x620")
+        self.minsize(740, 480)  # Adaptable for 1366x768 and compact displays
 
         # Set window icon if available
-        icon_path = os.path.join(APP_DIR, "icon.png")
-        if os.path.exists(icon_path):
+        self.icon_path = os.path.join(APP_DIR, "icon.png")
+        if os.path.exists(self.icon_path):
             try:
-                # CustomTkinter supports iconphoto via Tkinter root
-                from PIL import Image, ImageTk
-                img = Image.open(icon_path)
+                img = Image.open(self.icon_path)
                 photo = ImageTk.PhotoImage(img)
                 self.iconphoto(False, photo)
             except Exception:
@@ -50,6 +68,7 @@ class IISERBLoginApp(ctk.CTk):
         self.is_checking_network = False
         self.log_auto_refresh = True
         self.last_log_content = ""
+        self.tray_icon = None
 
         # Configure layout (2 columns: Sidebar & Main Content)
         self.grid_columnconfigure(1, weight=1)
@@ -58,7 +77,19 @@ class IISERBLoginApp(ctk.CTk):
         self._create_sidebar()
         self._create_main_content()
 
-        # Start periodic background updates
+        # Keyboard shortcuts
+        self.bind("<Control-r>", lambda e: self.refresh_all_status())
+        self.bind("<F5>", lambda e: self.refresh_all_status())
+        self.bind("<Control-l>", lambda e: self._handle_manual_login())
+
+        # Window close handler: minimize to system tray if available
+        self.protocol("WM_DELETE_WINDOW", self._on_window_close)
+
+        # Setup system tray icon if supported
+        if TRAY_AVAILABLE and os.path.exists(self.icon_path):
+            self._setup_tray_icon()
+
+        # Start periodic background monitoring
         self._start_periodic_monitoring()
 
     # -------------------------------------------------------------------------
@@ -131,7 +162,7 @@ class IISERBLoginApp(ctk.CTk):
     def _create_main_content(self):
         # Container frame
         self.content_container = ctk.CTkFrame(self, fg_color="transparent")
-        self.content_container.grid(row=0, column=1, sticky="nsew", padx=20, pady=20)
+        self.content_container.grid(row=0, column=1, sticky="nsew", padx=15, pady=15)
         self.content_container.grid_rowconfigure(0, weight=1)
         self.content_container.grid_columnconfigure(0, weight=1)
 
@@ -149,6 +180,30 @@ class IISERBLoginApp(ctk.CTk):
     # -------------------------------------------------------------------------
     def _build_status_tab(self) -> ctk.CTkScrollableFrame:
         frame = ctk.CTkScrollableFrame(self.content_container, fg_color="transparent")
+
+        # 0. Onboarding Banner (Shown if credentials are not configured)
+        self.card_onboarding = ctk.CTkFrame(frame, corner_radius=10, fg_color="#1E3A8A")
+        
+        onboarding_box = ctk.CTkFrame(self.card_onboarding, fg_color="transparent")
+        onboarding_box.pack(fill="x", padx=15, pady=12)
+
+        ctk.CTkLabel(
+            onboarding_box,
+            text="👋 Welcome to IISERB Login! Please configure your LDAP credentials to activate auto-login.",
+            font=ctk.CTkFont(size=13, weight="bold"),
+            text_color="white"
+        ).pack(side="left", padx=(0, 15))
+
+        ctk.CTkButton(
+            onboarding_box, text="⚙️ Go to Settings", width=120, height=30,
+            fg_color="#3B82F6", hover_color="#2563EB",
+            command=lambda: self._select_tab("settings")
+        ).pack(side="right")
+
+        # Check if onboarding card should be visible
+        cfg = backend.load_config()
+        if not cfg.get("USERNAME") or not cfg.get("PASSWORD"):
+            self.card_onboarding.pack(fill="x", pady=(0, 15), padx=5)
 
         # 1. Network Status Card
         card_net = ctk.CTkFrame(frame, corner_radius=10)
@@ -265,14 +320,14 @@ class IISERBLoginApp(ctk.CTk):
         self.btn_manual_login.pack(side="left", expand=True, fill="x", padx=(0, 10))
 
         self.btn_reconnect_lan = ctk.CTkButton(
-            act_btn_box, text="🔄 Reset LAN Link", height=38,
+            act_btn_box, text="🔄 Reset Link", height=38,
             fg_color="gray30", hover_color="gray20",
             command=self._handle_reconnect_lan
         )
         self.btn_reconnect_lan.pack(side="left", padx=(0, 10))
 
         self.btn_open_portal = ctk.CTkButton(
-            act_btn_box, text="🌐 Open Portal", height=38,
+            act_btn_box, text="🌐 Portal", height=38,
             command=self._open_portal_browser
         )
         self.btn_open_portal.pack(side="left", padx=(0, 10))
@@ -314,7 +369,7 @@ class IISERBLoginApp(ctk.CTk):
         ctk.CTkLabel(cred_grid, text="Username (LDAP):", font=ctk.CTkFont(size=13)).grid(
             row=0, column=0, sticky="w", pady=6, padx=(0, 15)
         )
-        self.entry_username = ctk.CTkEntry(cred_grid, height=34)
+        self.entry_username = ctk.CTkEntry(cred_grid, height=34, placeholder_text="e.g. rollnumber")
         self.entry_username.grid(row=0, column=1, sticky="ew", pady=6)
 
         # Password
@@ -325,8 +380,9 @@ class IISERBLoginApp(ctk.CTk):
         pass_box.grid(row=1, column=1, sticky="ew", pady=6)
         pass_box.grid_columnconfigure(0, weight=1)
 
-        self.entry_password = ctk.CTkEntry(pass_box, show="•", height=34)
+        self.entry_password = ctk.CTkEntry(pass_box, show="•", height=34, placeholder_text="LDAP password")
         self.entry_password.grid(row=0, column=0, sticky="ew", padx=(0, 10))
+        self.entry_password.bind("<Return>", lambda e: self._save_settings())
 
         self.chk_show_pass = ctk.CTkCheckBox(
             pass_box, text="Show", width=60, command=self._toggle_password_visibility
@@ -379,7 +435,7 @@ class IISERBLoginApp(ctk.CTk):
             ka_box, from_=1, to=30, number_of_steps=29, command=self._update_ka_label
         )
         self.slider_ka.grid(row=0, column=0, sticky="ew", padx=(0, 10))
-        self.lbl_ka_val = ctk.CTkLabel(ka_box, text="10 min", width=50)
+        self.lbl_ka_val = ctk.CTkLabel(ka_box, text="3 min", width=50)
         self.lbl_ka_val.grid(row=0, column=1)
 
         # Gateway URL
@@ -403,6 +459,16 @@ class IISERBLoginApp(ctk.CTk):
             ]
         )
         self.combo_probe.grid(row=4, column=1, sticky="ew", pady=6)
+
+        # Desktop Notifications Switch
+        ctk.CTkLabel(opt_grid, text="Desktop Alerts:", font=ctk.CTkFont(size=13)).grid(
+            row=5, column=0, sticky="w", pady=6, padx=(0, 15)
+        )
+        self.switch_notifications = ctk.CTkSwitch(
+            opt_grid, text="Notify on login success/disconnect", font=ctk.CTkFont(size=13)
+        )
+        self.switch_notifications.grid(row=5, column=1, sticky="w", pady=6)
+        self.switch_notifications.select()
 
         # Save & Reset Buttons
         btn_row = ctk.CTkFrame(frame, fg_color="transparent")
@@ -443,7 +509,7 @@ class IISERBLoginApp(ctk.CTk):
         top_bar.pack(fill="x", pady=(0, 10))
 
         ctk.CTkLabel(
-            top_bar, text="Live Log Stream (/tmp/iiserb_autologin.log)",
+            top_bar, text="Live Log Stream",
             font=ctk.CTkFont(size=15, weight="bold")
         ).pack(side="left")
 
@@ -540,6 +606,37 @@ class IISERBLoginApp(ctk.CTk):
         ctk.set_appearance_mode(new_mode.lower())
 
     # -------------------------------------------------------------------------
+    # System Tray Integration
+    # -------------------------------------------------------------------------
+    def _setup_tray_icon(self):
+        try:
+            image = Image.open(self.icon_path)
+            menu = pystray.Menu(
+                pystray.MenuItem("Show Window", self._restore_from_tray, default=True),
+                pystray.MenuItem("Force Login", lambda: self._handle_manual_login()),
+                pystray.MenuItem("Quit", self._quit_app)
+            )
+            self.tray_icon = pystray.Icon("iiserb-login", image, "IISERB Login", menu)
+            threading.Thread(target=self.tray_icon.run, daemon=True).start()
+        except Exception:
+            self.tray_icon = None
+
+    def _on_window_close(self):
+        if self.tray_icon:
+            self.withdraw()
+            backend.send_notification("IISERB Login", "Minimized to system tray. Right-click tray icon to open.")
+        else:
+            self.destroy()
+
+    def _restore_from_tray(self):
+        self.after(0, lambda: (self.deiconify(), self.lift(), self.focus_force()))
+
+    def _quit_app(self):
+        if self.tray_icon:
+            self.tray_icon.stop()
+        self.after(0, self.destroy)
+
+    # -------------------------------------------------------------------------
     # Real-Time Monitoring & Status Checks
     # -------------------------------------------------------------------------
     def _start_periodic_monitoring(self):
@@ -551,7 +648,7 @@ class IISERBLoginApp(ctk.CTk):
                         self._update_service_status_worker()
                     elif self.current_tab == "logs" and self.log_auto_refresh:
                         self._update_logs_worker()
-                except Exception as e:
+                except Exception:
                     pass
                 time.sleep(4)
 
@@ -576,7 +673,7 @@ class IISERBLoginApp(ctk.CTk):
                 self.lbl_latency.configure(text=f"Latency: {latency:.1f} ms")
             else:
                 self.badge_status.configure(
-                    text="🔴 OFFLINE (Captive Portal)",
+                    text="🔴 OFFLINE (Captive Challenge)",
                     fg_color="#EF4444"
                 )
                 self.lbl_latency.configure(text="Latency: Timeout")
@@ -654,13 +751,13 @@ class IISERBLoginApp(ctk.CTk):
 
     def _handle_reconnect_lan(self):
         self.btn_reconnect_lan.configure(state="disabled", text="⏳ Resetting...")
-        self.lbl_action_msg.configure(text="Refreshing network link via NetworkManager...", text_color="gray70")
+        self.lbl_action_msg.configure(text="Refreshing network link (non-destructive ARP sync)...", text_color="gray70")
 
         def task():
             ok, msg = backend.bounce_interface()
 
             def finish():
-                self.btn_reconnect_lan.configure(state="normal", text="🔄 Reset LAN Link")
+                self.btn_reconnect_lan.configure(state="normal", text="🔄 Reset Link")
                 self.lbl_action_msg.configure(
                     text=msg, text_color="#10B981" if ok else "#EF4444"
                 )
@@ -715,7 +812,7 @@ class IISERBLoginApp(ctk.CTk):
         self.slider_interval.set(chk_int)
         self.lbl_slider_val.configure(text=f"{chk_int}s")
 
-        ka_int = int(cfg.get("KEEPALIVE_INTERVAL", 10))
+        ka_int = int(cfg.get("KEEPALIVE_INTERVAL", 3))
         self.slider_ka.set(ka_int)
         self.lbl_ka_val.configure(text=f"{ka_int} min")
 
@@ -723,6 +820,11 @@ class IISERBLoginApp(ctk.CTk):
         self.entry_gateway.insert(0, cfg.get("GATEWAY", "https://gateway.iiserb.ac.in:1003"))
 
         self.combo_probe.set(cfg.get("PROBE_URL", "http://connectivity-check.ubuntu.com/"))
+
+        if cfg.get("NOTIFICATIONS_ENABLED", True):
+            self.switch_notifications.select()
+        else:
+            self.switch_notifications.deselect()
 
     def _load_defaults_into_ui(self):
         cfg = backend.DEFAULT_CONFIG
@@ -739,6 +841,7 @@ class IISERBLoginApp(ctk.CTk):
         self.entry_gateway.delete(0, "end")
         self.entry_gateway.insert(0, cfg["GATEWAY"])
         self.combo_probe.set(cfg["PROBE_URL"])
+        self.switch_notifications.select()
         self.lbl_settings_alert.configure(
             text="Defaults restored in fields. Click 'Save Settings' to apply.",
             text_color="#F59E0B"
@@ -752,11 +855,16 @@ class IISERBLoginApp(ctk.CTk):
             "CHECK_INTERVAL": int(self.slider_interval.get()),
             "KEEPALIVE_INTERVAL": int(self.slider_ka.get()),
             "GATEWAY": self.entry_gateway.get().strip(),
-            "PROBE_URL": self.combo_probe.get().strip()
+            "PROBE_URL": self.combo_probe.get().strip(),
+            "NOTIFICATIONS_ENABLED": (self.switch_notifications.get() == 1)
         }
 
         ok, msg = backend.save_config(new_cfg)
         if ok:
+            # If onboarding card was visible and credentials are set, hide it
+            if hasattr(self, "card_onboarding") and new_cfg["USERNAME"] and new_cfg["PASSWORD"]:
+                self.card_onboarding.pack_forget()
+
             # If service is active, restart it so new settings take effect immediately
             svc = backend.get_service_status()
             if svc["active"]:

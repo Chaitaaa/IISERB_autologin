@@ -1,0 +1,10 @@
+[Unit]
+Description=IISER Bhopal Captive Portal Auto-login (Oneshot Check)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/share/iiserb-login-app/venv/bin/python3 %h/.local/share/iiserb-login-app/app.py login --quiet
+StandardOutput=journal
+StandardError=journal

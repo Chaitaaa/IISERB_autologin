@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # IISER Bhopal Captive Portal Auto-login & Manager - Automated Installer
-# Works on Ubuntu, Debian, Fedora, Arch Linux, Linux Mint, Pop!_OS, etc.
+# Works seamlessly on Ubuntu, Debian, Fedora, Arch Linux, openSUSE, etc.
+# Fully PEP 668 compliant with isolated application virtual environment.
 # ==============================================================================
 
 set -e
@@ -20,9 +21,10 @@ echo ""
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SRC_DIR="$SCRIPT_DIR/src"
+COMPLETIONS_DIR="$SCRIPT_DIR/completions"
 
 # 1. Check Python 3
-echo -e "${YELLOW}🔍 Step 1: Checking Python environment...${NC}"
+echo -e "${YELLOW}🔍 Step 1: Checking Python & system dependencies...${NC}"
 if ! command -v python3 &>/dev/null; then
     echo -e "${RED}❌ Python 3 is not installed. Please install Python 3 first.${NC}"
     exit 1
@@ -40,6 +42,8 @@ elif command -v apt-get &>/dev/null; then
     PKG_MANAGER="apt"
 elif command -v pacman &>/dev/null; then
     PKG_MANAGER="pacman"
+elif command -v zypper &>/dev/null; then
+    PKG_MANAGER="zypper"
 fi
 
 # Check tkinter
@@ -51,8 +55,10 @@ if ! "$PYTHON_BIN" -c "import tkinter" &>/dev/null; then
         sudo $PKG_MANAGER install -y python3-tkinter
     elif [ "$PKG_MANAGER" = "pacman" ]; then
         sudo pacman -S --noconfirm tk
+    elif [ "$PKG_MANAGER" = "zypper" ]; then
+        sudo zypper install -y python3-tk
     else
-        echo -e "${RED}❌ Please install python3-tk / python3-tkinter manually for your distribution.${NC}"
+        echo -e "${RED}❌ Please install python3-tk / python3-tkinter for your distribution.${NC}"
         exit 1
     fi
 fi
@@ -71,71 +77,112 @@ if ! command -v curl &>/dev/null; then
 fi
 echo -e "   ${GREEN}✔ curl is available.${NC}"
 
-# Check pip
-if ! "$PYTHON_BIN" -m pip --version &>/dev/null; then
-    echo -e "${YELLOW}⚠️  Python pip not found. Installing python3-pip...${NC}"
+# Check python3-venv
+if ! "$PYTHON_BIN" -m venv --help &>/dev/null; then
+    echo -e "${YELLOW}⚠️  python3-venv not found. Installing...${NC}"
     if [ "$PKG_MANAGER" = "apt" ]; then
-        sudo apt-get install -y python3-pip
+        sudo apt-get install -y python3-venv
     elif [ "$PKG_MANAGER" = "dnf" ] || [ "$PKG_MANAGER" = "dnf5" ]; then
-        sudo $PKG_MANAGER install -y python3-pip
-    elif [ "$PKG_MANAGER" = "pacman" ]; then
-        sudo pacman -S --noconfirm python-pip
+        sudo $PKG_MANAGER install -y python3-virtualenv
     fi
 fi
 
-# 2. Install Python dependencies (customtkinter)
+# 2. Setup Application Destination and Permissions
 echo ""
-echo -e "${YELLOW}📦 Step 2: Checking CustomTkinter library...${NC}"
-if ! "$PYTHON_BIN" -c "import customtkinter" &>/dev/null; then
-    echo -e "   Installing customtkinter via pip..."
-    "$PYTHON_BIN" -m pip install customtkinter --break-system-packages --quiet 2>/dev/null || \
-    "$PYTHON_BIN" -m pip install customtkinter --user --quiet 2>/dev/null || \
-    "$PYTHON_BIN" -m pip install customtkinter --quiet 2>/dev/null || {
-        echo -e "${RED}❌ Failed to install customtkinter via pip. Please run: pip3 install customtkinter${NC}"
-        exit 1
-    }
-fi
-echo -e "   ${GREEN}✔ CustomTkinter installed successfully.${NC}"
-
-# 3. Create destination folders
-echo ""
-echo -e "${YELLOW}📂 Step 3: Installing application files...${NC}"
+echo -e "${YELLOW}📂 Step 2: Preparing secure directories...${NC}"
 INSTALL_DIR="$HOME/.local/share/iiserb-login-app"
+VENV_DIR="$INSTALL_DIR/venv"
 BIN_DIR="$HOME/.local/bin"
 DESKTOP_DIR="$HOME/Desktop"
 APPS_DIR="$HOME/.local/share/applications"
 SYSTEMD_USER_DIR="$HOME/.config/systemd/user"
+CONFIG_DIR="$HOME/.config/iiserb_login"
+STATE_DIR="$HOME/.local/state/iiserb_login"
 
-mkdir -p "$INSTALL_DIR"
-mkdir -p "$BIN_DIR"
-mkdir -p "$APPS_DIR"
-mkdir -p "$SYSTEMD_USER_DIR"
+# Secure private directories (mode 700)
+mkdir -p -m 700 "$CONFIG_DIR"
+mkdir -p -m 700 "$STATE_DIR"
+mkdir -p -m 755 "$INSTALL_DIR"
+mkdir -p -m 755 "$BIN_DIR"
+mkdir -p -m 755 "$APPS_DIR"
 
-# Copy source files
+# 3. Create PEP 668 Compliant Isolated Virtual Environment
+echo ""
+echo -e "${YELLOW}📦 Step 3: Setting up isolated application environment (PEP 668 compliant)...${NC}"
+if [ ! -d "$VENV_DIR" ] || [ ! -f "$VENV_DIR/bin/python3" ]; then
+    echo -e "   Creating virtual environment at $VENV_DIR..."
+    "$PYTHON_BIN" -m venv --system-site-packages "$VENV_DIR"
+fi
+
+VENV_PYTHON="$VENV_DIR/bin/python3"
+VENV_PIP="$VENV_DIR/bin/pip"
+
+echo -e "   Installing required packages into isolated venv..."
+"$VENV_PIP" install --quiet --upgrade pip setuptools 2>/dev/null || true
+"$VENV_PIP" install --quiet customtkinter pillow pystray 2>/dev/null || {
+    echo -e "${YELLOW}⚠️  Failed to install pystray; continuing with core customtkinter...${NC}"
+    "$VENV_PIP" install --quiet customtkinter pillow 2>/dev/null || true
+}
+echo -e "   ${GREEN}✔ Isolated environment ready.${NC}"
+
+# 4. Copy Application Source Files
+echo ""
+echo -e "${YELLOW}🚚 Step 4: Installing application files...${NC}"
 cp "$SRC_DIR/app.py" "$INSTALL_DIR/app.py"
 cp "$SRC_DIR/backend.py" "$INSTALL_DIR/backend.py"
 cp "$SRC_DIR/cli.py" "$INSTALL_DIR/cli.py"
 cp "$SRC_DIR/login.sh" "$INSTALL_DIR/login.sh"
 cp "$SRC_DIR/icon.png" "$INSTALL_DIR/icon.png"
 
-chmod +x "$INSTALL_DIR/app.py"
-chmod +x "$INSTALL_DIR/login.sh"
-echo -e "   ${GREEN}✔ Copied application files to $INSTALL_DIR${NC}"
+# Strictly restrict permissions
+chmod 700 "$INSTALL_DIR/app.py"
+chmod 700 "$INSTALL_DIR/login.sh"
+chmod 600 "$INSTALL_DIR/backend.py"
+chmod 600 "$INSTALL_DIR/cli.py"
+echo -e "   ${GREEN}✔ Copied files with secured permissions (mode 0700/0600).${NC}"
 
-# 4. Create executable launcher in ~/.local/bin
+# 5. Create Executable Launcher in ~/.local/bin
 cat << EOF > "$BIN_DIR/iiserb-login-app"
 #!/bin/bash
-exec "$PYTHON_BIN" "$INSTALL_DIR/app.py" "\$@"
+exec "$VENV_PYTHON" "$INSTALL_DIR/app.py" "\$@"
 EOF
-chmod +x "$BIN_DIR/iiserb-login-app"
-echo -e "   ${GREEN}✔ Created launcher at $BIN_DIR/iiserb-login-app${NC}"
+chmod 755 "$BIN_DIR/iiserb-login-app"
+echo -e "   ${GREEN}✔ Launcher created at $BIN_DIR/iiserb-login-app${NC}"
 
-# 5. Create Systemd User Service
+# 6. Install Shell Completions
 echo ""
-echo -e "${YELLOW}⚙️  Step 4: Configuring background systemd service...${NC}"
-cat << EOF > "$SYSTEMD_USER_DIR/portal-autologin.service"
+echo -e "${YELLOW}🐚 Step 5: Installing shell tab completions...${NC}"
+# Bash completion
+if [ -d "$COMPLETIONS_DIR" ]; then
+    BASH_COMP_DIR="$HOME/.local/share/bash-completion/completions"
+    mkdir -p "$BASH_COMP_DIR"
+    cp "$COMPLETIONS_DIR/iiserb-login-app.bash" "$BASH_COMP_DIR/iiserb-login-app" 2>/dev/null || true
+
+    # Zsh completion
+    ZSH_COMP_DIR="$HOME/.local/share/zsh/site-functions"
+    mkdir -p "$ZSH_COMP_DIR"
+    cp "$COMPLETIONS_DIR/_iiserb-login-app" "$ZSH_COMP_DIR/_iiserb-login-app" 2>/dev/null || true
+
+    # Fish completion
+    FISH_COMP_DIR="$HOME/.config/fish/completions"
+    mkdir -p "$FISH_COMP_DIR"
+    cp "$COMPLETIONS_DIR/iiserb-login-app.fish" "$FISH_COMP_DIR/iiserb-login-app.fish" 2>/dev/null || true
+    echo -e "   ${GREEN}✔ Shell tab completions installed (Bash, Zsh, Fish).${NC}"
+fi
+
+# 7. Configure Background Service / Autostart
+echo ""
+echo -e "${YELLOW}⚙️  Step 6: Configuring keepalive background service...${NC}"
+HAS_SYSTEMD=false
+if command -v systemctl &>/dev/null && systemctl --user list-units &>/dev/null; then
+    HAS_SYSTEMD=true
+fi
+
+if [ "$HAS_SYSTEMD" = true ]; then
+    mkdir -p "$SYSTEMD_USER_DIR"
+    cat << EOF > "$SYSTEMD_USER_DIR/portal-autologin.service"
 [Unit]
-Description=IISERB Captive Portal Autologin
+Description=IISERB Captive Portal Keepalive Daemon
 After=network-online.target
 Wants=network-online.target
 
@@ -150,21 +197,34 @@ StandardError=journal
 [Install]
 WantedBy=default.target
 EOF
+    systemctl --user daemon-reload 2>/dev/null || true
+    systemctl --user enable portal-autologin.service 2>/dev/null || true
+    echo -e "   ${GREEN}✔ Systemd keepalive service installed and enabled.${NC}"
+else
+    # Fallback to XDG Autostart for non-systemd distros / containers
+    AUTOSTART_DIR="$HOME/.config/autostart"
+    mkdir -p "$AUTOSTART_DIR"
+    cat << EOF > "$AUTOSTART_DIR/iiserb-portal-autologin.desktop"
+[Desktop Entry]
+Type=Application
+Name=IISERB Autologin Daemon
+Exec=/bin/bash $INSTALL_DIR/login.sh
+Terminal=false
+Hidden=false
+EOF
+    echo -e "   ${GREEN}✔ XDG Autostart configured (non-systemd environment).${NC}"
+fi
 
-systemctl --user daemon-reload
-systemctl --user enable portal-autologin.service >/dev/null 2>&1 || true
-echo -e "   ${GREEN}✔ Systemd background service enabled.${NC}"
-
-# 6. Create Desktop entries
+# 8. Create Desktop Application Shortcuts
 echo ""
-echo -e "${YELLOW}🖥️  Step 5: Creating desktop shortcuts...${NC}"
+echo -e "${YELLOW}🖥️  Step 7: Creating desktop application shortcuts...${NC}"
 DESKTOP_FILE_CONTENT="[Desktop Entry]
 Version=1.0
 Type=Application
 Name=IISERB Login
 GenericName=Captive Portal Auto-login
 Comment=IISER Bhopal Captive Portal Manager & Auto-login
-Exec=$PYTHON_BIN $INSTALL_DIR/app.py
+Exec=$VENV_PYTHON $INSTALL_DIR/app.py
 Icon=$INSTALL_DIR/icon.png
 Terminal=false
 Categories=Network;
@@ -189,7 +249,7 @@ if [ -d "$DESKTOP_DIR" ]; then
 fi
 echo -e "   ${GREEN}✔ Shortcut added to Applications Menu.${NC}"
 
-# Ensure ~/.local/bin is in PATH if not already
+# Ensure ~/.local/bin is in PATH
 if [[ ":$PATH:" != *":$HOME/.local/bin:"* ]]; then
     echo ""
     echo -e "${YELLOW}💡 Tip: Add ~/.local/bin to your PATH in ~/.bashrc or ~/.zshrc:${NC}"
@@ -201,10 +261,10 @@ echo -e "${GREEN}${BOLD}======================================================${
 echo -e "${GREEN}${BOLD}   Installation Complete! 🎉                         ${NC}"
 echo -e "${GREEN}${BOLD}======================================================${NC}"
 echo ""
-echo -e "You can launch the app by:"
-echo -e "  1. Double clicking ${BOLD}IISERB Login${NC} on your Desktop"
-echo -e "  2. Searching for ${BOLD}IISERB Login${NC} in your Application Menu"
-echo -e "  3. Running ${BOLD}iiserb-login-app${NC} in the terminal"
+echo -e "Launch the app via:"
+echo -e "  1. Desktop shortcut: ${BOLD}IISERB Login${NC}"
+echo -e "  2. Terminal command: ${BOLD}iiserb-login-app${NC} (or 'iiserb-login-app --help')"
 echo ""
-echo -e "Please open the app to enter your LDAP username and password in the Settings tab."
+echo -e "To configure your credentials in the terminal:"
+echo -e "  ${BOLD}iiserb-login-app config -u <ldap_username>${NC}"
 echo ""

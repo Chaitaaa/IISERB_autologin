@@ -1,0 +1,73 @@
+#compdef iiserb-login-app
+
+_iiserb_login_app() {
+    local -a commands
+    commands=(
+        'login:Authenticate immediately with FortiGate captive portal'
+        'logout:Log out active session from gateway'
+        'status:Show connectivity, IP, and daemon service status'
+        'reconnect:Non-destructive network link and ARP refresh'
+        'bounce:Alias for reconnect'
+        'service:Control keepalive systemd background service'
+        'logs:View or follow activity logs'
+        'diag:Run complete network diagnostic suite'
+        'config:View or update LDAP credentials and settings'
+    )
+
+    _arguments -C \
+        '(-g --gui)'{-g,--gui}'[Launch Desktop Graphical User Interface]' \
+        '(-j --json)'{-j,--json}'[Output machine-readable JSON]' \
+        '(-q --quiet)'{-q,--quiet}'[Silent execution, return exit code only]' \
+        '--short[Single line status summary]' \
+        '(-h --help)'{-h,--help}'[Show help message]' \
+        '1: :->command' \
+        '*:: :->args'
+
+    case $state in
+        command)
+            _describe -t commands 'iiserb-login-app subcommands' commands
+            ;;
+        args)
+            case $line[1] in
+                service)
+                    _values 'service action' \
+                        'start[Start the daemon service]' \
+                        'stop[Stop the daemon service]' \
+                        'restart[Restart the daemon service]' \
+                        'status[Show current service status]' \
+                        'enable[Enable service on boot]' \
+                        'disable[Disable autostart]'
+                    ;;
+                logs)
+                    _arguments \
+                        '(-n --lines)'{-n,--lines}'[Number of log lines to show]:lines:' \
+                        '(-f --follow)'{-f,--follow}'[Follow log stream in real time]'
+                    ;;
+                config)
+                    _arguments \
+                        '(-u --username)'{-u,--username}'[LDAP Username]:username:' \
+                        '(-p --password)'{-p,--password}'[LDAP Password]:password:' \
+                        '--password-stdin[Read password from stdin]' \
+                        '--gateway[Gateway URL]:url:' \
+                        '--probe[Probe URL]:url:' \
+                        '--ping-target[Target IP to ping]:ip:' \
+                        '--check-interval[Connectivity interval in seconds]:seconds:' \
+                        '--keepalive-interval[Keepalive interval in minutes]:minutes:'
+                    ;;
+                status)
+                    _arguments \
+                        '(-j --json)'{-j,--json}'[Output JSON format]' \
+                        '(-q --quiet)'{-q,--quiet}'[Exit code only]' \
+                        '--short[Single line summary]'
+                    ;;
+                login|logout)
+                    _arguments \
+                        '(-j --json)'{-j,--json}'[Output JSON format]' \
+                        '(-q --quiet)'{-q,--quiet}'[Exit code only]'
+                    ;;
+            esac
+            ;;
+    esac
+}
+
+_iiserb_login_app "$@"
