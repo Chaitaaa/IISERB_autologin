@@ -32,6 +32,38 @@ except Exception:
 
 load_config
 
+case "$1" in
+    --status|-s)
+        if ping -c 1 -W 2 "$PING_TARGET" > /dev/null 2>&1; then
+            echo "Status: ONLINE (Connected)"
+            exit 0
+        else
+            echo "Status: OFFLINE (Captive Portal Challenge)"
+            exit 2
+        fi
+        ;;
+    --bounce|-r)
+        IFACE=$(ip route show default 2>/dev/null | awk '{print $5}' | head -n 1)
+        IFACE="${IFACE:-enp4s0}"
+        echo "Resetting interface $IFACE..."
+        nmcli dev disconnect "$IFACE" && sleep 1 && nmcli dev connect "$IFACE"
+        exit $?
+        ;;
+    --help|-h)
+        echo "Usage: login.sh [options]"
+        echo "Options:"
+        echo "  (no args)       Run continuous keepalive daemon loop"
+        echo "  --once, -1      Run single login attempt and exit"
+        echo "  --status, -s    Check if currently online"
+        echo "  --bounce, -r    Reset/bounce network interface link"
+        echo "  --help, -h      Show this help message"
+        exit 0
+        ;;
+    --once|-1)
+        ONCE_MODE=1
+        ;;
+esac
+
 log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOG_FILE"
 }
@@ -43,6 +75,10 @@ while true; do
 
     # --- Online check ---
     if ping -c 1 -W 2 "$PING_TARGET" > /dev/null 2>&1; then
+        if [ "$ONCE_MODE" = "1" ]; then
+            log "Already online. Exiting."
+            exit 0
+        fi
         sleep "${CHECK_INTERVAL:-60}"
         continue
     fi
@@ -117,6 +153,9 @@ while true; do
     # Step 3: Verify
     if ping -c 1 -W 2 "$PING_TARGET" > /dev/null 2>&1; then
         log "Login SUCCESS for $USERNAME."
+        if [ "$ONCE_MODE" = "1" ]; then
+            exit 0
+        fi
 
         # Step 4: Keepalive loop — ping every CHECK_INTERVAL, send keepalive every KEEPALIVE_INTERVAL
         KEEPALIVE_COUNTER=0

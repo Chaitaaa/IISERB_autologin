@@ -30,17 +30,29 @@ fi
 PYTHON_BIN="$(which python3)"
 echo -e "   Found Python at: ${GREEN}$PYTHON_BIN${NC}"
 
+# Detect package manager
+PKG_MANAGER=""
+if command -v dnf5 &>/dev/null; then
+    PKG_MANAGER="dnf5"
+elif command -v dnf &>/dev/null; then
+    PKG_MANAGER="dnf"
+elif command -v apt-get &>/dev/null; then
+    PKG_MANAGER="apt"
+elif command -v pacman &>/dev/null; then
+    PKG_MANAGER="pacman"
+fi
+
 # Check tkinter
 if ! "$PYTHON_BIN" -c "import tkinter" &>/dev/null; then
     echo -e "${YELLOW}⚠️  Python Tkinter not found. Attempting to install...${NC}"
-    if command -v apt-get &>/dev/null; then
+    if [ "$PKG_MANAGER" = "apt" ]; then
         sudo apt-get update && sudo apt-get install -y python3-tk
-    elif command -v dnf &>/dev/null; then
-        sudo dnf install -y python3-tkinter
-    elif command -v pacman &>/dev/null; then
+    elif [ "$PKG_MANAGER" = "dnf" ] || [ "$PKG_MANAGER" = "dnf5" ]; then
+        sudo $PKG_MANAGER install -y python3-tkinter
+    elif [ "$PKG_MANAGER" = "pacman" ]; then
         sudo pacman -S --noconfirm tk
     else
-        echo -e "${RED}❌ Please install python3-tk manually for your distribution.${NC}"
+        echo -e "${RED}❌ Please install python3-tk / python3-tkinter manually for your distribution.${NC}"
         exit 1
     fi
 fi
@@ -49,24 +61,36 @@ echo -e "   ${GREEN}✔ Tkinter GUI toolkit is available.${NC}"
 # Check curl
 if ! command -v curl &>/dev/null; then
     echo -e "${YELLOW}⚠️  curl not found. Installing curl...${NC}"
-    if command -v apt-get &>/dev/null; then
+    if [ "$PKG_MANAGER" = "apt" ]; then
         sudo apt-get install -y curl
-    elif command -v dnf &>/dev/null; then
-        sudo dnf install -y curl
-    elif command -v pacman &>/dev/null; then
+    elif [ "$PKG_MANAGER" = "dnf" ] || [ "$PKG_MANAGER" = "dnf5" ]; then
+        sudo $PKG_MANAGER install -y curl
+    elif [ "$PKG_MANAGER" = "pacman" ]; then
         sudo pacman -S --noconfirm curl
     fi
 fi
 echo -e "   ${GREEN}✔ curl is available.${NC}"
+
+# Check pip
+if ! "$PYTHON_BIN" -m pip --version &>/dev/null; then
+    echo -e "${YELLOW}⚠️  Python pip not found. Installing python3-pip...${NC}"
+    if [ "$PKG_MANAGER" = "apt" ]; then
+        sudo apt-get install -y python3-pip
+    elif [ "$PKG_MANAGER" = "dnf" ] || [ "$PKG_MANAGER" = "dnf5" ]; then
+        sudo $PKG_MANAGER install -y python3-pip
+    elif [ "$PKG_MANAGER" = "pacman" ]; then
+        sudo pacman -S --noconfirm python-pip
+    fi
+fi
 
 # 2. Install Python dependencies (customtkinter)
 echo ""
 echo -e "${YELLOW}📦 Step 2: Checking CustomTkinter library...${NC}"
 if ! "$PYTHON_BIN" -c "import customtkinter" &>/dev/null; then
     echo -e "   Installing customtkinter via pip..."
-    "$PYTHON_BIN" -m pip install customtkinter --quiet 2>/dev/null || \
     "$PYTHON_BIN" -m pip install customtkinter --break-system-packages --quiet 2>/dev/null || \
-    pip3 install customtkinter --user --quiet 2>/dev/null || {
+    "$PYTHON_BIN" -m pip install customtkinter --user --quiet 2>/dev/null || \
+    "$PYTHON_BIN" -m pip install customtkinter --quiet 2>/dev/null || {
         echo -e "${RED}❌ Failed to install customtkinter via pip. Please run: pip3 install customtkinter${NC}"
         exit 1
     }
@@ -90,6 +114,7 @@ mkdir -p "$SYSTEMD_USER_DIR"
 # Copy source files
 cp "$SRC_DIR/app.py" "$INSTALL_DIR/app.py"
 cp "$SRC_DIR/backend.py" "$INSTALL_DIR/backend.py"
+cp "$SRC_DIR/cli.py" "$INSTALL_DIR/cli.py"
 cp "$SRC_DIR/login.sh" "$INSTALL_DIR/login.sh"
 cp "$SRC_DIR/icon.png" "$INSTALL_DIR/icon.png"
 

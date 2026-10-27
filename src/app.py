@@ -863,6 +863,10 @@ class IISERBLoginApp(ctk.CTk):
 
 
 def main():
+    if len(sys.argv) > 1 and sys.argv[1] not in ["--gui", "-g"]:
+        import cli
+        sys.exit(cli.handle_cli(sys.argv[1:]))
+
     app = IISERBLoginApp()
     app.mainloop()
 
