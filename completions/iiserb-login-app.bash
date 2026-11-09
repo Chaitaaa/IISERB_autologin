@@ -4,7 +4,7 @@ _iiserb_login_app_completion() {
     local cur prev words cword
     _init_completion || return
 
-    local commands="login logout status reconnect bounce service logs diag config"
+    local commands="login logout status reconnect bounce lan-restart service logs diag config"
     local global_opts="--gui -g --json -j --quiet -q --short --help -h -l --login -s --status -r --reconnect --logout"
 
     if [[ $cword -eq 1 ]]; then
@@ -30,8 +30,8 @@ _iiserb_login_app_completion() {
         login|logout)
             COMPREPLY=( $(compgen -W "-j --json -q --quiet" -- "$cur") )
             ;;
-        reconnect|bounce)
-            COMPREPLY=( $(compgen -W "-q --quiet" -- "$cur") )
+        reconnect|bounce|lan-restart)
+            COMPREPLY=( $(compgen -W "-H --hard --ssh-safe -d --delay --sudo -c --conn --connection -i --dev --interface -j --json -q --quiet" -- "$cur") )
             ;;
         *)
             COMPREPLY=( $(compgen -W "$global_opts" -- "$cur") )

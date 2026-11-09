@@ -326,6 +326,13 @@ class IISERBLoginApp(ctk.CTk):
         )
         self.btn_reconnect_lan.pack(side="left", padx=(0, 10))
 
+        self.btn_hard_restart = ctk.CTkButton(
+            act_btn_box, text="⚡ Hard LAN Reset", height=38,
+            fg_color="#DC2626", hover_color="#B91C1C",
+            command=self._handle_hard_restart_lan
+        )
+        self.btn_hard_restart.pack(side="left", padx=(0, 10))
+
         self.btn_open_portal = ctk.CTkButton(
             act_btn_box, text="🌐 Portal", height=38,
             command=self._open_portal_browser
@@ -469,6 +476,15 @@ class IISERBLoginApp(ctk.CTk):
         )
         self.switch_notifications.grid(row=5, column=1, sticky="w", pady=6)
         self.switch_notifications.select()
+
+        # Auto Hard Bounce Switch
+        ctk.CTkLabel(opt_grid, text="Auto Hard Bounce:", font=ctk.CTkFont(size=13)).grid(
+            row=6, column=0, sticky="w", pady=6, padx=(0, 15)
+        )
+        self.switch_auto_hard = ctk.CTkSwitch(
+            opt_grid, text="Auto SSH-safe hard bounce if captive challenge stalls", font=ctk.CTkFont(size=13)
+        )
+        self.switch_auto_hard.grid(row=6, column=1, sticky="w", pady=6)
 
         # Save & Reset Buttons
         btn_row = ctk.CTkFrame(frame, fg_color="transparent")
@@ -767,6 +783,37 @@ class IISERBLoginApp(ctk.CTk):
 
         threading.Thread(target=task, daemon=True).start()
 
+    def _handle_hard_restart_lan(self):
+        self.btn_hard_restart.configure(state="disabled", text="⏳ Resetting...")
+        self.lbl_action_msg.configure(
+            text="Scheduling auto-reconnect timer in 10s and cycling Ethernet connection...",
+            text_color="#F59E0B"
+        )
+
+        def task():
+            res = backend.hard_restart_lan(delay_sec=10)
+            def finish():
+                self.btn_hard_restart.configure(state="normal", text="⚡ Hard LAN Reset")
+                if res.get("success"):
+                    self.lbl_action_msg.configure(
+                        text=f"Interface cycled. Reconnection timer active (10s). Re-authenticating shortly...",
+                        text_color="#10B981"
+                    )
+                    def post_reconnect():
+                        time.sleep(12)
+                        self._update_network_status_worker()
+                        backend.perform_login(auto_bounce=False)
+                        self._update_network_status_worker()
+                    threading.Thread(target=post_reconnect, daemon=True).start()
+                else:
+                    self.lbl_action_msg.configure(
+                        text=res.get("message", "Hard LAN reset failed."),
+                        text_color="#EF4444"
+                    )
+            self.after(0, finish)
+
+        threading.Thread(target=task, daemon=True).start()
+
     def _handle_logout(self):
         self.lbl_action_msg.configure(text="Sending logout request...", text_color="gray70")
 
@@ -826,6 +873,11 @@ class IISERBLoginApp(ctk.CTk):
         else:
             self.switch_notifications.deselect()
 
+        if cfg.get("AUTO_HARD_BOUNCE", False):
+            self.switch_auto_hard.select()
+        else:
+            self.switch_auto_hard.deselect()
+
     def _load_defaults_into_ui(self):
         cfg = backend.DEFAULT_CONFIG
         self.entry_username.delete(0, "end")
@@ -842,6 +894,7 @@ class IISERBLoginApp(ctk.CTk):
         self.entry_gateway.insert(0, cfg["GATEWAY"])
         self.combo_probe.set(cfg["PROBE_URL"])
         self.switch_notifications.select()
+        self.switch_auto_hard.deselect()
         self.lbl_settings_alert.configure(
             text="Defaults restored in fields. Click 'Save Settings' to apply.",
             text_color="#F59E0B"
@@ -856,7 +909,8 @@ class IISERBLoginApp(ctk.CTk):
             "KEEPALIVE_INTERVAL": int(self.slider_ka.get()),
             "GATEWAY": self.entry_gateway.get().strip(),
             "PROBE_URL": self.combo_probe.get().strip(),
-            "NOTIFICATIONS_ENABLED": (self.switch_notifications.get() == 1)
+            "NOTIFICATIONS_ENABLED": (self.switch_notifications.get() == 1),
+            "AUTO_HARD_BOUNCE": (self.switch_auto_hard.get() == 1)
         }
 
         ok, msg = backend.save_config(new_cfg)

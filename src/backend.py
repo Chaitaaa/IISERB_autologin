@@ -35,7 +35,9 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "KEEPALIVE_INTERVAL": 3,
     "COOKIE_JAR": os.path.join(USER_RUNTIME_DIR, "fgt_cookies.txt"),
     "LOG_FILE": os.path.join(STATE_DIR, "autologin.log"),
-    "NOTIFICATIONS_ENABLED": True
+    "NOTIFICATIONS_ENABLED": True,
+    "AUTO_HARD_BOUNCE": False,
+    "HARD_BOUNCE_DELAY": 10
 }
 
 SERVICE_NAME = "portal-autologin.service"
@@ -98,6 +100,8 @@ def save_config(new_config: Dict[str, Any]) -> Tuple[bool, str]:
         cfg.update(new_config)
         cfg["CHECK_INTERVAL"] = int(cfg.get("CHECK_INTERVAL", 60))
         cfg["KEEPALIVE_INTERVAL"] = int(cfg.get("KEEPALIVE_INTERVAL", 3))
+        cfg["HARD_BOUNCE_DELAY"] = int(cfg.get("HARD_BOUNCE_DELAY", 10))
+        cfg["AUTO_HARD_BOUNCE"] = bool(cfg.get("AUTO_HARD_BOUNCE", False))
 
         # Atomic write with 0600 permissions
         temp_path = f"{CONFIG_PATH}.tmp.{os.getpid()}"
@@ -280,6 +284,261 @@ def bounce_interface(interface: Optional[str] = None) -> Tuple[bool, str]:
         return False, f"Link refresh error: {e}"
 
 
+def get_ethernet_info() -> Optional[Dict[str, Any]]:
+    """
+    Step 1: Identify the Ethernet interface and NetworkManager connection name.
+    Matches nmcli -f DEVICE,TYPE,STATE,CONNECTION device status.
+    """
+    try:
+        res = subprocess.run(
+            ["nmcli", "-t", "-f", "DEVICE,TYPE,STATE,CONNECTION", "device", "status"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=3
+        )
+        if res.returncode == 0 and res.stdout:
+            lines = [l for l in res.stdout.strip().split("\n") if l.strip()]
+            # 1. Prefer active connected ethernet
+            for line in lines:
+                parts = line.split(":")
+                if len(parts) >= 4 and parts[1].strip() == "ethernet" and parts[2].strip() == "connected":
+                    conn = parts[3].strip()
+                    if conn and conn != "--":
+                        return {"device": parts[0].strip(), "type": "ethernet", "state": parts[2].strip(), "connection": conn}
+            # 2. Any ethernet device with a connection name
+            for line in lines:
+                parts = line.split(":")
+                if len(parts) >= 4 and parts[1].strip() == "ethernet":
+                    conn = parts[3].strip()
+                    if conn and conn != "--":
+                        return {"device": parts[0].strip(), "type": "ethernet", "state": parts[2].strip(), "connection": conn}
+            # 3. Any ethernet device, find connection from connection show
+            for line in lines:
+                parts = line.split(":")
+                if len(parts) >= 4 and parts[1].strip() == "ethernet":
+                    dev = parts[0].strip()
+                    conn = get_connection_for_device(dev)
+                    return {"device": dev, "type": "ethernet", "state": parts[2].strip(), "connection": conn}
+    except Exception:
+        pass
+    return None
+
+
+def get_connection_for_device(device: str) -> Optional[str]:
+    """Find active or saved NetworkManager connection profile for a network device."""
+    try:
+        res = subprocess.run(
+            ["nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show", "--active"],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=2
+        )
+        if res.returncode == 0 and res.stdout:
+            for line in res.stdout.strip().split("\n"):
+                parts = line.split(":")
+                if len(parts) >= 2 and parts[1].strip() == device:
+                    return parts[0].strip()
+        # Fallback to saved connections
+        res = subprocess.run(
+            ["nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show"],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=2
+        )
+        if res.returncode == 0 and res.stdout:
+            for line in res.stdout.strip().split("\n"):
+                parts = line.split(":")
+                if len(parts) >= 2 and parts[1].strip() == device:
+                    return parts[0].strip()
+    except Exception:
+        pass
+    return None
+
+
+def check_ssh_uses_interface(target_interface: str) -> Dict[str, Any]:
+    """
+    Step 2: Identify whether the active SSH connection uses the target Ethernet interface.
+    Inspects $SSH_CONNECTION / $SSH_CLIENT, or active inbound port 22 sockets,
+    and runs 'ip route get <client_ip>' to detect the routing device.
+    """
+    info = {
+        "is_ssh": False,
+        "client_ip": None,
+        "ssh_interface": None,
+        "uses_target_interface": False,
+        "warning": ""
+    }
+    client_ip = None
+    ssh_conn = os.environ.get("SSH_CONNECTION") or os.environ.get("SSH_CLIENT")
+    if ssh_conn:
+        parts = ssh_conn.strip().split()
+        if parts:
+            client_ip = parts[0]
+    else:
+        # Check active inbound SSH sessions via ss
+        try:
+            res_ss = subprocess.run(
+                ["ss", "-tnH", "sport = :22"],
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=2
+            )
+            if res_ss.returncode == 0 and res_ss.stdout:
+                for line in res_ss.stdout.strip().split("\n"):
+                    parts = line.split()
+                    if len(parts) >= 5 and parts[0] == "ESTAB":
+                        peer = parts[4]
+                        peer_ip = peer.rsplit(":", 1)[0].strip("[]")
+                        client_ip = peer_ip
+                        break
+        except Exception:
+            pass
+
+    if client_ip:
+        info["is_ssh"] = True
+        info["client_ip"] = client_ip
+        try:
+            res_route = subprocess.run(
+                ["ip", "route", "get", client_ip],
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=2
+            )
+            if res_route.returncode == 0 and res_route.stdout:
+                m = re.search(r"dev\s+(\S+)", res_route.stdout)
+                if m:
+                    info["ssh_interface"] = m.group(1)
+                    info["uses_target_interface"] = (info["ssh_interface"] == target_interface)
+        except Exception:
+            pass
+
+    if info["uses_target_interface"]:
+        info["warning"] = (
+            f"Active SSH session from {info['client_ip']} routes through interface {target_interface}. "
+            "Cycling this connection will disconnect your SSH session temporarily."
+        )
+
+    return info
+
+
+def hard_restart_lan(
+    connection: Optional[str] = None,
+    interface: Optional[str] = None,
+    delay_sec: int = 10,
+    use_sudo: bool = False
+) -> Dict[str, Any]:
+    """
+    Universal procedure: Restart LAN remotely over SSH.
+
+    Step 1: Identify Ethernet interface and NetworkManager connection name.
+    Step 2: Identify whether SSH uses Ethernet.
+    Step 3: Schedule automatic reconnection (systemd-run --on-active=...s nmcli connection up ...).
+    Step 4: Disconnect Ethernet (nmcli connection down ...).
+    Step 5: Provide status, reconnect command, and verification instructions.
+    """
+    result: Dict[str, Any] = {
+        "success": False,
+        "device": interface,
+        "connection": connection,
+        "delay_sec": delay_sec,
+        "ssh_info": None,
+        "scheduled_unit": None,
+        "schedule_method": None,
+        "message": ""
+    }
+
+    # Step 1: Identify interface & connection if not explicitly provided
+    if not interface or not connection:
+        eth = get_ethernet_info()
+        if eth:
+            if not interface:
+                interface = eth.get("device")
+            if not connection:
+                connection = eth.get("connection")
+        if not interface:
+            interface = get_default_interface()
+            if interface and not connection:
+                connection = get_connection_for_device(interface)
+
+    if not connection:
+        result["message"] = f"Could not determine NetworkManager connection name for interface {interface or 'unknown'}."
+        return result
+
+    result["device"] = interface
+    result["connection"] = connection
+
+    # Step 2: Identify whether SSH uses Ethernet
+    ssh_info = check_ssh_uses_interface(interface or "")
+    result["ssh_info"] = ssh_info
+
+    # Step 3: Schedule automatic reconnection
+    ts = int(time.time())
+    unit_name = f"lan-reconnect-{ts}"
+    result["scheduled_unit"] = unit_name
+
+    nmcli_bin = "/usr/bin/nmcli" if os.path.exists("/usr/bin/nmcli") else "nmcli"
+    up_cmd = f"{nmcli_bin} connection up '{connection}'"
+
+    scheduled = False
+    schedule_method = "user_systemd"
+
+    # Try systemd-run (sudo or user)
+    if use_sudo or os.geteuid() == 0:
+        cmd_run = ["sudo", "systemd-run", f"--unit={unit_name}", f"--on-active={delay_sec}s", nmcli_bin, "connection", "up", connection]
+        try:
+            res_sr = subprocess.run(cmd_run, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=5)
+            if res_sr.returncode == 0:
+                scheduled = True
+                schedule_method = "system_systemd"
+        except Exception:
+            pass
+    else:
+        # Try unprivileged systemd-run --user
+        cmd_run = ["systemd-run", "--user", f"--unit={unit_name}", f"--on-active={delay_sec}s", nmcli_bin, "connection", "up", connection]
+        try:
+            res_sr = subprocess.run(cmd_run, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=5)
+            if res_sr.returncode == 0:
+                scheduled = True
+                schedule_method = "user_systemd"
+        except Exception:
+            pass
+
+    # Fallback to detached nohup background subshell if systemd-run is unavailable
+    if not scheduled:
+        try:
+            subshell_cmd = f"sleep {delay_sec} && {up_cmd}"
+            subprocess.Popen(
+                ["nohup", "sh", "-c", subshell_cmd],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, preexec_fn=os.setpgrp
+            )
+            scheduled = True
+            schedule_method = "nohup_fallback"
+        except Exception as e:
+            result["message"] = f"Failed to schedule reconnect timer: {e}"
+            return result
+
+    result["schedule_method"] = schedule_method
+
+    # Step 4: Disconnect Ethernet
+    down_cmd = [nmcli_bin, "connection", "down", connection]
+    if use_sudo and os.geteuid() != 0:
+        down_cmd = ["sudo"] + down_cmd
+
+    try:
+        res_down = subprocess.run(down_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=6)
+        if res_down.returncode != 0:
+            if interface:
+                disc_cmd = [nmcli_bin, "dev", "disconnect", interface]
+                if use_sudo and os.geteuid() != 0:
+                    disc_cmd = ["sudo"] + disc_cmd
+                subprocess.run(disc_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=4)
+    except Exception as e:
+        result["message"] = f"Warning during disconnect: {e}. Scheduled reconnect is still running."
+
+    send_notification(
+        "IISERB Login: LAN Restart",
+        f"Resetting {connection}. Reconnecting automatically in {delay_sec}s."
+    )
+
+    result["success"] = True
+    msg = f"Scheduled reconnection for '{connection}' in {delay_sec}s (via {schedule_method}). Interface {interface} disconnected."
+    if ssh_info.get("uses_target_interface"):
+        msg += f"\n⚠️ Notice: Active SSH session detected. Reconnect in {delay_sec}s."
+    result["message"] = msg
+
+    return result
+
+
 def get_service_status() -> Dict[str, Any]:
     """Check systemd user service status."""
     status = {"active": False, "enabled": False, "status_text": "Stopped", "pid": None}
@@ -364,11 +623,11 @@ def get_magic_token(probe_url: str) -> Optional[str]:
     return None
 
 
-def perform_login(auto_bounce: bool = True) -> Tuple[bool, str]:
+def perform_login(auto_bounce: bool = True, hard_bounce: bool = False, delay_sec: int = 10) -> Tuple[bool, str]:
     """
     Perform captive portal login sequence securely without exposing credentials in process lists.
     If the challenge token is not detected initially while offline,
-    automatically refreshes the interface link to prompt the FortiGate gateway.
+    automatically refreshes the interface link (soft or hard bounce) to prompt the FortiGate gateway.
     Returns (success, message).
     """
     cfg = load_config()
@@ -382,6 +641,14 @@ def perform_login(auto_bounce: bool = True) -> Tuple[bool, str]:
         return False, "LDAP username and password are required. Configure them in Settings or CLI."
 
     _ensure_secure_dirs()
+
+    # If hard bounce requested immediately
+    if hard_bounce:
+        res = hard_restart_lan(delay_sec=delay_sec)
+        if not res.get("success"):
+            return False, f"Hard LAN restart failed: {res.get('message')}"
+        # Wait for scheduled reconnect
+        time.sleep(delay_sec + 2)
 
     # 1. Clean cookie jar safely
     if os.path.exists(cookie_jar):
@@ -403,6 +670,13 @@ def perform_login(auto_bounce: bool = True) -> Tuple[bool, str]:
             bounce_interface()
             time.sleep(2)
             magic = get_magic_token(probe_url)
+
+            # If still not found and auto hard bounce is configured, escalate to hard bounce
+            if not magic and cfg.get("AUTO_HARD_BOUNCE", False):
+                delay = int(cfg.get("HARD_BOUNCE_DELAY", 10))
+                hard_restart_lan(delay_sec=delay)
+                time.sleep(delay + 2)
+                magic = get_magic_token(probe_url)
 
         if not magic:
             is_on, lat = check_internet(cfg.get("PING_TARGET", "1.1.1.1"))

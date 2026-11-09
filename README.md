@@ -32,11 +32,14 @@ The CLI works seamlessly on headless servers, over SSH, and inside tmux without 
 | Command | Description |
 |---|---|
 | `iiserb-login-app login` | Immediately authenticate with FortiGate captive portal |
+| `iiserb-login-app login --hard` | Authenticate with automatic SSH-safe hard LAN bounce if challenge stalls |
 | `iiserb-login-app status` | Full terminal status dashboard (latency, IP, service state) |
 | `iiserb-login-app status --json` | Machine-readable JSON output (Waybar / Polybar / scripts) |
 | `iiserb-login-app status --short` | Single-line status (e.g. `ONLINE 18.2ms` or `OFFLINE`) |
 | `iiserb-login-app status --quiet` | Exit code only (`0` = Online, `2` = Captive Offline) |
 | `iiserb-login-app reconnect` | Non-destructive network link refresh (ARP flush + nmcli reapply) |
+| `iiserb-login-app reconnect --hard` | Universal SSH-safe hard LAN restart (schedules 10s auto-reconnect) |
+| `iiserb-login-app lan-restart` | Alias for universal remote LAN restart over SSH |
 | `iiserb-login-app logout` | Log out active session from gateway |
 | `iiserb-login-app service restart` | Restart background keepalive daemon |
 | `iiserb-login-app service [start\|stop\|status]` | Manage systemd service |
@@ -102,6 +105,27 @@ For status bars, use `iiserb-login-app status --json`:
 - **Non-Destructive Link Refresh**: Replaces destructive interface teardowns with ARP neighbor cache flushing (`ip neigh flush`) and gentle NetworkManager reapplies (`nmcli dev reapply`), preserving active SSH, VPN, and Tailscale connections.
 - **Dynamic Interface Detection**: Dynamically queries the active default gateway adapter without hardcoded device names.
 - **Keepalive Interval**: Defaults to a 3-minute heartbeat pulse to prevent FortiGate's 5-minute idle timeout.
+
+---
+
+## ⚡ Universal Remote LAN Restart over SSH
+
+When the FortiGate firewall or switch port stalls, merely refreshing ARP cache might not prompt a new captive portal challenge. However, disconnecting an interface over SSH normally breaks your remote session and leaves the machine unreachable.
+
+The application includes an automated **5-step SSH-safe restart procedure**:
+
+```bash
+iiserb-login-app lan-restart
+# Or:
+iiserb-login-app reconnect --hard --delay 10
+```
+
+### How the automated procedure works:
+1. **Identifies Ethernet Profile**: Detects active Ethernet interface and NetworkManager connection (e.g. `enp4s0` -> `netplan-enp4s0`).
+2. **Checks SSH Session Routing**: Inspects whether your active SSH session traverses this interface. If so, warns you that SSH will temporarily disconnect.
+3. **Schedules Guaranteed Reconnection**: Registers a high-priority timer (`systemd-run --user --on-active=10s nmcli connection up "<conn>"`) **before** taking the link down.
+4. **Cycles Physical Link**: Issues `nmcli connection down "<conn>"` to cycle the hardware link and prompt the firewall gateway.
+5. **Auto-Reconnection**: The systemd timer automatically executes in 10 seconds, restoring the connection and triggering auto-login. If connected over SSH, you can immediately reconnect via `ssh user@REMOTE_IP`.
 
 ---
 

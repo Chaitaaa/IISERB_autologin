@@ -57,10 +57,12 @@ def cmd_login(args) -> int:
             print("Run: iiserb-login-app config -u <ldap_username> (you will be prompted securely for password)")
         return EXIT_CONFIG_MISSING
 
+    is_hard = getattr(args, "hard", False)
     if not getattr(args, "quiet", False) and not getattr(args, "json", False):
-        print(f"{CYAN}🌐 Attempting captive portal login for {BOLD}{username}{NC}...")
+        mode_str = " (with hard LAN bounce)" if is_hard else ""
+        print(f"{CYAN}🌐 Attempting captive portal login for {BOLD}{username}{NC}{mode_str}...")
 
-    ok, msg = backend.perform_login(auto_bounce=True)
+    ok, msg = backend.perform_login(auto_bounce=True, hard_bounce=is_hard)
 
     if getattr(args, "json", False):
         print(json.dumps({"success": ok, "message": msg, "username": username}))
@@ -159,8 +161,94 @@ def cmd_status(args) -> int:
     return EXIT_SUCCESS if is_online else EXIT_CAPTIVE
 
 
+def cmd_hard_lan_restart(args) -> int:
+    """
+    Universal procedure: Restart LAN remotely over SSH safely.
+    Schedules an automatic systemd reconnect timer BEFORE disconnecting the interface.
+    """
+    delay = getattr(args, "delay", 10) or 10
+    use_sudo = getattr(args, "sudo", False)
+    conn = getattr(args, "connection", None)
+    iface = getattr(args, "interface", None)
+    is_json = getattr(args, "json", False)
+    is_quiet = getattr(args, "quiet", False)
+
+    eth = backend.get_ethernet_info()
+    detected_dev = iface or (eth.get("device") if eth else backend.get_default_interface())
+    detected_conn = conn or (eth.get("connection") if eth else backend.get_connection_for_device(detected_dev or ""))
+    ssh_info = backend.check_ssh_uses_interface(detected_dev or "")
+
+    if not is_quiet and not is_json:
+        print(f"{BOLD}======================================================{NC}")
+        print(f"{BOLD}   Universal Remote LAN Restart (SSH-Safe)            {NC}")
+        print(f"{BOLD}======================================================{NC}")
+        print(f"{CYAN}[Step 1/5] Identifying Ethernet Interface:{NC}")
+        print(f"           Device:     {BOLD}{detected_dev or 'Unknown'}{NC}")
+        print(f"           Connection: {BOLD}{detected_conn or 'Unknown'}{NC}\n")
+
+        print(f"{CYAN}[Step 2/5] Checking SSH Session Routing:{NC}")
+        if ssh_info.get("uses_target_interface"):
+            print(f"           {YELLOW}⚠️  Active SSH session detected from {ssh_info.get('client_ip')} on {detected_dev}.{NC}")
+            print(f"           {YELLOW}   Your SSH connection will disconnect temporarily for {delay}s.{NC}\n")
+        elif ssh_info.get("is_ssh"):
+            print(f"           {GREEN}✔ SSH connected via alternate interface ({ssh_info.get('ssh_interface')}).{NC}\n")
+        else:
+            print(f"           {GREEN}✔ No active SSH session on this interface (running locally).{NC}\n")
+
+        print(f"{CYAN}[Step 3/5] Scheduling automatic reconnection in {delay}s...{NC}")
+
+    res = backend.hard_restart_lan(
+        connection=detected_conn,
+        interface=detected_dev,
+        delay_sec=delay,
+        use_sudo=use_sudo
+    )
+
+    if is_json:
+        print(json.dumps(res))
+        return EXIT_SUCCESS if res.get("success") else EXIT_NET_DOWN
+
+    if not res.get("success"):
+        if not is_quiet:
+            print(f"{RED}❌ {res.get('message')}{NC}")
+        return EXIT_NET_DOWN
+
+    if not is_quiet:
+        print(f"           {GREEN}✔ Timer registered: {res.get('scheduled_unit')} (method: {res.get('schedule_method')}){NC}\n")
+        print(f"{CYAN}[Step 4/5] Disconnecting Ethernet connection '{res.get('connection')}'...{NC}")
+        print(f"           {GREEN}✔ Interface down. Hardware PHY / switch port link cycled.{NC}\n")
+
+        print(f"{CYAN}[Step 5/5] Reconnection & Verification:{NC}")
+        if ssh_info.get("uses_target_interface"):
+            ip_addr = backend.get_network_info().get("ip", "REMOTE_PC_IP")
+            print(f"           {BOLD}SSH will reconnect in {delay} seconds.{NC}")
+            print(f"           To reconnect manually after {delay}s:")
+            print(f"           {BOLD}ssh <user>@{ip_addr}{NC}")
+            print(f"           Then verify with: {BOLD}iiserb-login-app status{NC}")
+        else:
+            print(f"           Reconnecting in {delay} seconds automatically...")
+            time.sleep(delay + 2)
+            is_on, lat = backend.check_internet()
+            if is_on:
+                print(f"           {GREEN}✔ Connection restored successfully! Latency: {lat:.1f}ms{NC}")
+            else:
+                print(f"           {YELLOW}⚠️  Link reconnected. Authenticating captive portal...{NC}")
+                ok_log, msg_log = backend.perform_login(auto_bounce=False)
+                if ok_log:
+                    print(f"           {GREEN}✔ {msg_log}{NC}")
+                else:
+                    print(f"           {RED}❌ {msg_log}{NC}")
+        print(f"{BOLD}======================================================{NC}")
+
+    return EXIT_SUCCESS
+
+
 def cmd_reconnect(args) -> int:
-    """Non-destructive network link refresh."""
+    """Network link refresh: soft non-destructive ARP sync or SSH-safe hard bounce."""
+    is_hard = getattr(args, "hard", False) or getattr(args, "command", "") == "lan-restart"
+    if is_hard:
+        return cmd_hard_lan_restart(args)
+
     net = backend.get_network_info()
     iface = net.get("interface", "Unknown")
     if not getattr(args, "quiet", False):
@@ -372,7 +460,9 @@ Examples:
   iiserb-login-app status               # Show connection & service status
   iiserb-login-app status --json        # Machine-readable JSON output (Waybar/Polybar)
   iiserb-login-app status --short       # Concise single-line status
-  iiserb-login-app reconnect            # Non-destructive network link refresh
+  iiserb-login-app reconnect            # Non-destructive network link refresh (soft ARP sync)
+  iiserb-login-app reconnect --hard     # Universal SSH-safe hard LAN restart (10s auto-reconnect)
+  iiserb-login-app lan-restart          # Alias for remote LAN restart over SSH
   iiserb-login-app logout               # Log out from gateway
   iiserb-login-app logs -f              # Follow live daemon logs
   iiserb-login-app service restart      # Restart background keepalive service
@@ -396,6 +486,7 @@ Examples:
 
     # Command: login
     p_login = subparsers.add_parser("login", help="Authenticate with captive portal")
+    p_login.add_argument("-H", "--hard", action="store_true", help="Perform SSH-safe hard LAN bounce if challenge stalls")
     p_login.add_argument("-j", "--json", action="store_true", help="JSON output")
     p_login.add_argument("-q", "--quiet", action="store_true", help="Quiet mode")
     p_login.set_defaults(func=cmd_login)
@@ -414,9 +505,26 @@ Examples:
     p_status.set_defaults(func=cmd_status)
 
     # Command: reconnect / bounce
-    p_reconn = subparsers.add_parser("reconnect", aliases=["bounce"], help="Refresh network link (non-destructive ARP sync)")
+    p_reconn = subparsers.add_parser("reconnect", aliases=["bounce"], help="Refresh network link (soft ARP sync or SSH-safe hard bounce)")
+    p_reconn.add_argument("-H", "--hard", "--ssh-safe", action="store_true", dest="hard",
+                          help="Universal SSH-safe hard LAN restart (schedules reconnect timer before taking connection down)")
+    p_reconn.add_argument("-d", "--delay", type=int, default=10, help="Reconnection delay in seconds (default: 10)")
+    p_reconn.add_argument("--sudo", action="store_true", help="Use sudo for system-level systemd-run / nmcli")
+    p_reconn.add_argument("-c", "--connection", "--conn", help="Explicit NetworkManager connection profile name")
+    p_reconn.add_argument("-i", "--interface", "--dev", help="Explicit network interface device (e.g. eno1, enp4s0)")
+    p_reconn.add_argument("-j", "--json", action="store_true", help="JSON output")
     p_reconn.add_argument("-q", "--quiet", action="store_true", help="Quiet mode")
     p_reconn.set_defaults(func=cmd_reconnect)
+
+    # Command: lan-restart
+    p_lan = subparsers.add_parser("lan-restart", help="Universal remote LAN restart over SSH (5-step safe bounce)")
+    p_lan.add_argument("-d", "--delay", type=int, default=10, help="Reconnection delay in seconds (default: 10)")
+    p_lan.add_argument("--sudo", action="store_true", help="Use sudo for system-level systemd-run / nmcli")
+    p_lan.add_argument("-c", "--connection", "--conn", help="Explicit NetworkManager connection profile name")
+    p_lan.add_argument("-i", "--interface", "--dev", help="Explicit network interface device (e.g. eno1, enp4s0)")
+    p_lan.add_argument("-j", "--json", action="store_true", help="JSON output")
+    p_lan.add_argument("-q", "--quiet", action="store_true", help="Quiet mode")
+    p_lan.set_defaults(func=cmd_hard_lan_restart)
 
     # Command: service
     p_svc = subparsers.add_parser("service", help="Manage background service")

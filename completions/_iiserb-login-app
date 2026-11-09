@@ -8,6 +8,7 @@ _iiserb_login_app() {
         'status:Show connectivity, IP, and daemon service status'
         'reconnect:Non-destructive network link and ARP refresh'
         'bounce:Alias for reconnect'
+        'lan-restart:Universal remote LAN restart over SSH (SSH-safe scheduled bounce)'
         'service:Control keepalive systemd background service'
         'logs:View or follow activity logs'
         'diag:Run complete network diagnostic suite'
@@ -62,6 +63,16 @@ _iiserb_login_app() {
                     ;;
                 login|logout)
                     _arguments \
+                        '(-j --json)'{-j,--json}'[Output JSON format]' \
+                        '(-q --quiet)'{-q,--quiet}'[Exit code only]'
+                    ;;
+                reconnect|bounce|lan-restart)
+                    _arguments \
+                        '(-H --hard --ssh-safe)'{-H,--hard,--ssh-safe}'[SSH-safe hard LAN restart]' \
+                        '(-d --delay)'{-d,--delay}'[Delay seconds before auto-reconnect]:seconds:' \
+                        '--sudo[Use sudo for system-level systemd-run]' \
+                        '(-c --conn --connection)'{-c,--conn,--connection}'[Connection name]:connection:' \
+                        '(-i --dev --interface)'{-i,--dev,--interface}'[Interface device]:interface:' \
                         '(-j --json)'{-j,--json}'[Output JSON format]' \
                         '(-q --quiet)'{-q,--quiet}'[Exit code only]'
                     ;;

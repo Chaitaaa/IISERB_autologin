@@ -57,6 +57,7 @@ load_config() {
                 COOKIE_JAR) COOKIE_JAR="$val" ;;
                 LOG_FILE) LOG_FILE="$val" ;;
                 NOTIFICATIONS_ENABLED) NOTIFICATIONS_ENABLED="$val" ;;
+                AUTO_HARD_BOUNCE) AUTO_HARD_BOUNCE="$val" ;;
             esac
         done < <(python3 -c "
 import json, os
@@ -111,6 +112,50 @@ bounce_link() {
     fi
 }
 
+# Universal remote LAN restart over SSH (SSH-safe scheduled reconnect)
+hard_restart_lan() {
+    local delay="${1:-10}"
+    local eth_line dev conn
+    eth_line=$(nmcli -t -f DEVICE,TYPE,STATE,CONNECTION device status 2>/dev/null | grep ':ethernet:' | head -n 1)
+    dev=$(echo "$eth_line" | cut -d: -f1)
+    conn=$(echo "$eth_line" | cut -d: -f4)
+    if [ -z "$conn" ] || [ "$conn" = "--" ]; then
+        conn=$(nmcli -t -f NAME,DEVICE connection show --active 2>/dev/null | grep ":$dev" | cut -d: -f1 | head -n 1)
+    fi
+    conn="${conn:-Wired connection 1}"
+    
+    log "[Step 1] Identified Ethernet: $dev (Connection: $conn)"
+    
+    # Check SSH routing
+    if [ -n "$SSH_CONNECTION" ]; then
+        local client_ip route_dev
+        client_ip=$(echo "$SSH_CONNECTION" | awk '{print $1}')
+        route_dev=$(ip route get "$client_ip" 2>/dev/null | grep -oE 'dev \S+' | awk '{print $2}')
+        if [ "$route_dev" = "$dev" ]; then
+            log "[Step 2] ⚠️ SSH session uses $dev. SSH will temporarily disconnect for ${delay}s."
+        else
+            log "[Step 2] SSH connected via alternate interface ($route_dev)."
+        fi
+    else
+        log "[Step 2] Running locally (no SSH session active on $dev)."
+    fi
+
+    log "[Step 3] Scheduling automatic reconnection in ${delay}s..."
+    local unit="lan-reconnect-$(date +%s)"
+    if command -v systemd-run >/dev/null 2>&1; then
+        systemd-run --user --unit="$unit" --on-active="${delay}s" /usr/bin/nmcli connection up "$conn" >/dev/null 2>&1 || \
+        nohup sh -c "sleep $delay && nmcli connection up '$conn'" >/dev/null 2>&1 &
+    else
+        nohup sh -c "sleep $delay && nmcli connection up '$conn'" >/dev/null 2>&1 &
+    fi
+
+    log "[Step 4] Disconnecting Ethernet: $conn..."
+    nmcli connection down "$conn" >/dev/null 2>&1 || nmcli dev disconnect "$dev" >/dev/null 2>&1 || true
+
+    log "[Step 5] Disconnected. Reconnection scheduled in ${delay}s."
+    notify "IISERB Login: LAN Restart" "Interface cycled. Reconnecting in ${delay}s."
+}
+
 load_config
 
 case "$1" in
@@ -127,14 +172,19 @@ case "$1" in
         bounce_link
         exit 0
         ;;
+    --hard-bounce|-H|--lan-restart)
+        hard_restart_lan "${2:-10}"
+        exit 0
+        ;;
     --help|-h)
         echo "Usage: login.sh [options]"
         echo "Options:"
-        echo "  (no args)       Run continuous keepalive daemon loop"
-        echo "  --once, -1      Run single login attempt and exit"
-        echo "  --status, -s    Check if currently online (Tier 1 ping + Tier 2 probe)"
-        echo "  --bounce, -r    Non-destructive network link refresh"
-        echo "  --help, -h      Show this help message"
+        echo "  (no args)               Run continuous keepalive daemon loop"
+        echo "  --once, -1              Run single login attempt and exit"
+        echo "  --status, -s            Check if currently online (Tier 1 ping + Tier 2 probe)"
+        echo "  --bounce, -r            Non-destructive network link refresh (soft ARP sync)"
+        echo "  --hard-bounce, -H       Universal SSH-safe hard LAN restart (schedules auto-reconnect)"
+        echo "  --help, -h              Show this help message"
         exit 0
         ;;
     --once|-1)
@@ -186,6 +236,19 @@ while true; do
                 break
             fi
         done
+        # If still no challenge token and auto hard bounce is enabled, escalate to SSH-safe hard restart
+        if [ -z "$MAGIC" ] && [ "$AUTO_HARD_BOUNCE" = "True" -o "$AUTO_HARD_BOUNCE" = "1" ]; then
+            log "Soft refresh did not yield challenge token. Escalating to SSH-safe hard LAN restart..."
+            hard_restart_lan 10
+            sleep 12
+            for PROBE in "$PROBE_URL" "http://connectivity-check.ubuntu.com/"; do
+                HEADERS_AND_BODY=$(curl -4 -k -s -i --connect-timeout 4 "$PROBE" 2>/dev/null)
+                MAGIC=$(echo "$HEADERS_AND_BODY" | grep -oiE 'fgtauth\?[a-z0-9]{16,64}' | head -1 | cut -d'?' -f2)
+                if [ -n "$MAGIC" ]; then
+                    break
+                fi
+            done
+        fi
     fi
 
     if [ -z "$MAGIC" ]; then
