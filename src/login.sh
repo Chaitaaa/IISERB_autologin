@@ -92,7 +92,11 @@ is_online() {
     fi
     # Tier 2: Captive portal HTTP check (returns 204 if unintercepted)
     local code
-    code=$(curl -4 -s -o /dev/null -w "%{http_code}" --connect-timeout 3 "${PROBE_URL:-http://connectivity-check.ubuntu.com/}" 2>/dev/null)
+    code=$(curl -4 -s -o /dev/null -w "%{http_code}" --connect-timeout 3 "http://connectivity-check.ubuntu.com/" 2>/dev/null)
+    if [ "$code" = "204" ]; then
+        return 0
+    fi
+    code=$(curl -4 -s -o /dev/null -w "%{http_code}" --connect-timeout 3 "http://clients3.google.com/generate_204" 2>/dev/null)
     if [ "$code" = "204" ]; then
         return 0
     fi

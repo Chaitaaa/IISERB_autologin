@@ -233,26 +233,43 @@ def check_internet(target: Optional[str] = None, probe_url: Optional[str] = None
     if not ping_ok:
         return False, 0.0
 
-    # Tier 2: HTTP Probe for Captive Portal Interception
-    try:
-        # Check HTTP status code using curl
-        cmd = ["curl", "-4", "-s", "-o", "/dev/null", "-w", "%{http_code}", "--connect-timeout", "3", probe_url]
-        res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=4)
-        status_code = res.stdout.strip()
-        # 204 No Content confirms real un-intercepted internet connection
-        if status_code == "204":
-            return True, latency
-        # If redirected (302/303) or returning HTML login page (200), captive portal is active
-        return False, latency
-    except Exception:
-        # Fallback probe via Python urllib
+    # Tier 2: Multi-target HTTP probe for Captive Portal Interception
+    endpoints = [
+        "http://connectivity-check.ubuntu.com/",
+        "http://clients3.google.com/generate_204",
+        probe_url
+    ]
+    seen = set()
+    for ep in endpoints:
+        if not ep or ep in seen:
+            continue
+        seen.add(ep)
         try:
-            req = urllib.request.Request(probe_url, headers={"User-Agent": "Mozilla/5.0"})
-            with urllib.request.urlopen(req, timeout=3) as resp:
-                if resp.status == 204:
+            cmd = ["curl", "-4", "-s", "-i", "--connect-timeout", "3", ep]
+            res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=4)
+            # If intercepted by FortiGate, it returns a 302/303 redirect with fgtauth or gateway URL
+            if "fgtauth" in res.stdout.lower() or "gateway.iiserb.ac.in" in res.stdout.lower():
+                return False, latency
+            m = re.search(r"HTTP/[\d\.]+\s+(\d+)", res.stdout)
+            if m:
+                code = int(m.group(1))
+                # 204 No Content confirms real un-intercepted internet connection
+                if code == 204:
+                    return True, latency
+                # 200 OK from known connectivity probe
+                if code == 200 and ("ubuntu" in ep or "google" in ep or "firefox" in ep or "success" in res.stdout.lower()):
                     return True, latency
         except Exception:
-            pass
+            continue
+
+    # Fallback probe via Python urllib
+    try:
+        req = urllib.request.Request("http://connectivity-check.ubuntu.com/", headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=3) as resp:
+            if resp.status == 204:
+                return True, latency
+    except Exception:
+        pass
 
     return False, latency
 
