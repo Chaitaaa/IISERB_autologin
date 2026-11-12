@@ -2,10 +2,10 @@
 """
 IISER Bhopal Captive Portal Manager - Desktop Application
 Engineered to Apple macOS Human Interface Guidelines (HIG) standards:
-- macOS Sonoma / Sequoia System Settings Inset Grouped Table Cards
-- Modern macOS Source List Sidebar with segmented controls & telemetry pills
-- Dynamic Light/Dark mode with authentic Apple SF Pro & System Accents
-- Keyboard ergonomics, live breathing indicators, and Console.app stream
+- Modern macOS Source List Sidebar with clean grouped categories
+- Inset Grouped Table Cards for Preferences with hairline dividers
+- Clean vector status indicators with zero font/glyph dependencies
+- Full keyboard ergonomics, real-time log stream, and network diagnostics
 """
 
 import os
@@ -25,10 +25,8 @@ if len(sys.argv) > 1 and sys.argv[1] not in ["--gui", "-g"]:
 # Lazy load GUI modules
 import threading
 import time
-import math
 import webbrowser
 import subprocess
-import tkinter as tk
 from typing import Optional, Tuple, Dict, Any
 
 import customtkinter as ctk
@@ -156,106 +154,17 @@ ctk.set_default_color_theme("blue")
 
 
 # -----------------------------------------------------------------------------
-# Micro-Interaction Helpers & Dynamic Widgets
-# -----------------------------------------------------------------------------
-def hex_to_rgb(hex_str: str) -> Tuple[int, int, int]:
-    hex_str = hex_str.lstrip("#")
-    return tuple(int(hex_str[i:i + 2], 16) for i in (0, 2, 4))
-
-
-def rgb_to_hex(rgb: Tuple[int, int, int]) -> str:
-    return f"#{rgb[0]:02x}{rgb[1]:02x}{rgb[2]:02x}"
-
-
-def lerp_color(c1_hex: str, c2_hex: str, t: float) -> str:
-    r1, g1, b1 = hex_to_rgb(c1_hex)
-    r2, g2, b2 = hex_to_rgb(c2_hex)
-    r = int(r1 + (r2 - r1) * t)
-    g = int(g1 + (g2 - g1) * t)
-    b = int(b1 + (b2 - b1) * t)
-    return rgb_to_hex((r, g, b))
-
-
-class macOSStatusDot(tk.Canvas):
-    """
-    Apple-inspired animated status indicator dot with a rhythmic breathing halo ring.
-    States: 'online' (green), 'checking' (amber pulse), 'offline' (ruby glow), 'stopped' (slate gray).
-    """
-    PALETTE = {
-        "online":   {"core": "#34C759", "halo": "#34C759", "speed": 0.04},
-        "checking": {"core": "#FF9500", "halo": "#FF9500", "speed": 0.12},
-        "offline":  {"core": "#FF3B30", "halo": "#FF3B30", "speed": 0.03},
-        "stopped":  {"core": "#8E8E93", "halo": "#8E8E93", "speed": 0.00},
-    }
-
-    def __init__(self, master, size: int = 20, status: str = "checking", **kwargs):
-        is_dark = ctk.get_appearance_mode() == "Dark"
-        bg_col = "#252528" if is_dark else "#ECECEC"
-        super().__init__(master, width=size, height=size, bg=bg_col, highlightthickness=0, bd=0, **kwargs)
-        self.size = size
-        self.center = size / 2.0
-        self.status = status
-        self.phase = 0.0
-        self.animating = True
-
-        self.halo_id = self.create_oval(0, 0, 0, 0, outline="", fill="")
-        self.core_id = self.create_oval(0, 0, 0, 0, outline="", fill="")
-
-        self.set_status(status)
-        self._animate_tick()
-
-    def set_status(self, new_status: str):
-        if new_status in self.PALETTE:
-            self.status = new_status
-            cfg = self.PALETTE[self.status]
-            self.itemconfig(self.core_id, fill=cfg["core"])
-            self._render_frame()
-
-    def _render_frame(self):
-        cfg = self.PALETTE.get(self.status, self.PALETTE["offline"])
-        core_r = 4.0
-        self.coords(
-            self.core_id,
-            self.center - core_r, self.center - core_r,
-            self.center + core_r, self.center + core_r
-        )
-
-        if cfg["speed"] > 0:
-            wave = (math.sin(self.phase) + 1.0) / 2.0
-            halo_r = core_r + 1.0 + (wave * 3.5)
-            self.coords(
-                self.halo_id,
-                self.center - halo_r, self.center - halo_r,
-                self.center + halo_r, self.center + halo_r
-            )
-            self.itemconfig(self.halo_id, fill=cfg["halo"], stipple="gray25" if wave < 0.5 else "gray50")
-        else:
-            self.itemconfig(self.halo_id, fill="")
-
-    def _animate_tick(self):
-        if self.animating:
-            cfg = self.PALETTE.get(self.status, self.PALETTE["offline"])
-            if cfg["speed"] > 0:
-                self.phase += cfg["speed"]
-                self._render_frame()
-            self.after(50, self._animate_tick)
-
-    def set_bg(self, bg_color: str):
-        self.configure(bg=bg_color)
-
-
-# -----------------------------------------------------------------------------
 # Main Application Window
 # -----------------------------------------------------------------------------
 class IISERBLoginApp(ctk.CTk):
     def __init__(self):
         super().__init__()
 
-        self.title("IISERB Portal — Captive Network Manager")
+        self.title("IISERB Portal - Captive Network Manager")
         self.minsize(760, 500)
         self.configure(fg_color=APPLE_THEME["window_bg"])
 
-        # Optical screen centering (golden ratio bias)
+        # Optical screen centering
         self._center_window(940, 630)
 
         # Multi-resolution Retina icon loading
@@ -278,7 +187,7 @@ class IISERBLoginApp(ctk.CTk):
         self._create_sidebar()
         self._create_main_content()
 
-        # macOS & Linux unified keyboard ergonomics
+        # Unified keyboard ergonomics
         self._register_keyboard_shortcuts()
 
         # Window close handler (minimize to tray if available)
@@ -314,25 +223,20 @@ class IISERBLoginApp(ctk.CTk):
                 pass
 
     def _register_keyboard_shortcuts(self):
-        # Refresh: Ctrl+R / Cmd+R / F5
         for k in ["<Control-r>", "<Control-R>", "<Command-r>", "<Command-R>", "<F5>"]:
             self.bind_all(k, lambda e: self.refresh_all_status())
 
-        # Force Login: Ctrl+L / Cmd+L
         for k in ["<Control-l>", "<Control-L>", "<Command-l>", "<Command-L>"]:
             self.bind_all(k, lambda e: self._handle_manual_login())
 
-        # Tab Switching: Ctrl+1..4 / Cmd+1..4
         tab_map = {"1": "status", "2": "logs", "3": "diag", "4": "settings"}
         for num, tab_name in tab_map.items():
             for mod in ["Control", "Command"]:
                 self.bind_all(f"<{mod}-Key-{num}>", lambda e, t=tab_name: self._select_tab(t))
 
-        # Preferences: Ctrl+, / Cmd+,
         for mod in ["Control", "Command"]:
             self.bind_all(f"<{mod}-comma>", lambda e: self._select_tab("settings"))
 
-        # Escape key to clear alert & reset focus
         self.bind_all("<Escape>", lambda e: self._handle_escape_press())
 
     def _handle_escape_press(self):
@@ -343,7 +247,7 @@ class IISERBLoginApp(ctk.CTk):
             self.lbl_settings_alert.configure(text="")
 
     # =========================================================================
-    # SIDEBAR: macOS Source List Navigation
+    # SIDEBAR: macOS Source List Navigation (No traffic lights, clean layout)
     # =========================================================================
     def _create_sidebar(self):
         self.sidebar_frame = ctk.CTkFrame(
@@ -353,24 +257,13 @@ class IISERBLoginApp(ctk.CTk):
         self.sidebar_frame.grid(row=0, column=0, sticky="nsew")
         self.sidebar_frame.grid_propagate(False)
 
-        # 1. Window Controls Header (Apple 3 Traffic Lights)
-        dots_row = ctk.CTkFrame(self.sidebar_frame, fg_color="transparent", height=24)
-        dots_row.pack(fill="x", padx=16, pady=(14, 6))
-
-        for color in ["#FF5F56", "#FFBD2E", "#27C93F"]:
-            dot = ctk.CTkLabel(
-                dots_row, text="●", font=ctk.CTkFont(size=12),
-                text_color=color, width=14, height=14
-            )
-            dot.pack(side="left", padx=2)
-
-        # 2. App Identity Header
+        # 1. App Identity Header
         brand_frame = ctk.CTkFrame(self.sidebar_frame, fg_color="transparent")
-        brand_frame.pack(fill="x", padx=16, pady=(6, 12))
+        brand_frame.pack(fill="x", padx=18, pady=(20, 14))
 
         app_title = ctk.CTkLabel(
             brand_frame, text="IISERB Portal",
-            font=get_macos_font(size=16, weight="bold"),
+            font=get_macos_font(size=17, weight="bold"),
             text_color=APPLE_THEME["text_primary"]
         )
         app_title.pack(anchor="w")
@@ -380,27 +273,33 @@ class IISERBLoginApp(ctk.CTk):
             font=get_macos_font(size=11),
             text_color=APPLE_THEME["text_secondary"]
         )
-        app_subtitle.pack(anchor="w")
+        app_subtitle.pack(anchor="w", pady=(1, 0))
 
-        # 3. Sidebar Live Connection Capsule with Breathing Dot
+        # 2. Sidebar Live Connection Capsule with Crisp Vector Dot
         self.pill_sidebar_status = ctk.CTkFrame(
             self.sidebar_frame, corner_radius=12,
             fg_color=APPLE_THEME["card_bg"],
             border_width=1, border_color=APPLE_THEME["card_border"]
         )
-        self.pill_sidebar_status.pack(fill="x", padx=14, pady=(0, 16))
+        self.pill_sidebar_status.pack(fill="x", padx=14, pady=(0, 18))
 
-        self.dot_sidebar = macOSStatusDot(self.pill_sidebar_status, size=18, status="checking")
-        self.dot_sidebar.pack(side="left", padx=(10, 4), pady=5)
+        dot_box = ctk.CTkFrame(self.pill_sidebar_status, fg_color="transparent")
+        dot_box.pack(side="left", padx=(10, 4), pady=6)
+
+        self.dot_sidebar = ctk.CTkFrame(
+            dot_box, width=8, height=8, corner_radius=4,
+            fg_color=APPLE_THEME["accent_orange"]
+        )
+        self.dot_sidebar.pack(side="left")
 
         self.lbl_sidebar_status_text = ctk.CTkLabel(
             self.pill_sidebar_status, text="Checking status...",
             font=get_macos_font(size=11, weight="bold"),
             text_color=APPLE_THEME["text_secondary"]
         )
-        self.lbl_sidebar_status_text.pack(side="left", padx=(0, 10), pady=5)
+        self.lbl_sidebar_status_text.pack(side="left", padx=(0, 10), pady=6)
 
-        # 4. Navigation Group 1: MAIN
+        # 3. Navigation Group 1: MAIN
         lbl_sec_main = ctk.CTkLabel(
             self.sidebar_frame, text="MAIN",
             font=get_macos_font(size=10, weight="bold"),
@@ -408,33 +307,33 @@ class IISERBLoginApp(ctk.CTk):
         )
         lbl_sec_main.pack(anchor="w", padx=18, pady=(4, 4))
 
-        self.btn_nav_status = self._create_nav_pill("📊 Dashboard (⌘1)", "status")
+        self.btn_nav_status = self._create_nav_pill("Dashboard", "status")
         self.btn_nav_status.pack(fill="x", padx=10, pady=2)
 
-        self.btn_nav_logs = self._create_nav_pill("📜 Live Console (⌘2)", "logs")
+        self.btn_nav_logs = self._create_nav_pill("Live Console", "logs")
         self.btn_nav_logs.pack(fill="x", padx=10, pady=2)
 
-        self.btn_nav_diag = self._create_nav_pill("🩺 Network Doctor (⌘3)", "diag")
+        self.btn_nav_diag = self._create_nav_pill("Network Doctor", "diag")
         self.btn_nav_diag.pack(fill="x", padx=10, pady=2)
 
-        # 5. Navigation Group 2: CONFIGURATION
+        # 4. Navigation Group 2: CONFIGURATION
         lbl_sec_cfg = ctk.CTkLabel(
             self.sidebar_frame, text="CONFIGURATION",
             font=get_macos_font(size=10, weight="bold"),
             text_color=APPLE_THEME["text_tertiary"]
         )
-        lbl_sec_cfg.pack(anchor="w", padx=18, pady=(16, 4))
+        lbl_sec_cfg.pack(anchor="w", padx=18, pady=(18, 4))
 
-        self.btn_nav_settings = self._create_nav_pill("⚙️ Preferences (⌘4)", "settings")
+        self.btn_nav_settings = self._create_nav_pill("Preferences", "settings")
         self.btn_nav_settings.pack(fill="x", padx=10, pady=2)
 
         # Spacer pushes appearance menu to bottom
         spacer = ctk.CTkFrame(self.sidebar_frame, fg_color="transparent")
         spacer.pack(fill="both", expand=True)
 
-        # 6. Sidebar Footer: macOS Segmented Theme Switcher
+        # 5. Sidebar Footer: macOS Segmented Theme Switcher
         theme_box = ctk.CTkFrame(self.sidebar_frame, fg_color="transparent")
-        theme_box.pack(fill="x", padx=14, pady=(0, 16))
+        theme_box.pack(fill="x", padx=14, pady=(0, 18))
 
         lbl_theme = ctk.CTkLabel(
             theme_box, text="APPEARANCE",
@@ -503,7 +402,7 @@ class IISERBLoginApp(ctk.CTk):
 
         ctk.CTkLabel(
             onboard_box,
-            text="👋 Welcome to IISERB Login! Configure your LDAP roll number & password in Preferences to enable auto-login.",
+            text="Welcome to IISERB Login. Configure your LDAP roll number and password in Preferences to enable auto-login.",
             font=get_macos_font(size=12, weight="bold"),
             text_color=APPLE_THEME["accent_blue"]
         ).pack(side="left", padx=(0, 15), fill="x", expand=True)
@@ -532,9 +431,15 @@ class IISERBLoginApp(ctk.CTk):
         hero_top = ctk.CTkFrame(self.card_hero, fg_color="transparent")
         hero_top.pack(fill="x", padx=20, pady=(18, 12))
 
-        # Hero Icon & Dot
-        self.hero_dot = macOSStatusDot(hero_top, size=32, status="checking")
-        self.hero_dot.pack(side="left", padx=(0, 12))
+        # Hero Vector Status Dot
+        dot_wrapper = ctk.CTkFrame(hero_top, fg_color="transparent")
+        dot_wrapper.pack(side="left", padx=(0, 14))
+
+        self.hero_dot = ctk.CTkFrame(
+            dot_wrapper, width=12, height=12, corner_radius=6,
+            fg_color=APPLE_THEME["accent_orange"]
+        )
+        self.hero_dot.pack(side="left", pady=4)
 
         hero_info = ctk.CTkFrame(hero_top, fg_color="transparent")
         hero_info.pack(side="left", fill="x", expand=True)
@@ -547,7 +452,7 @@ class IISERBLoginApp(ctk.CTk):
         self.lbl_hero_title.pack(anchor="w")
 
         self.lbl_hero_sub = ctk.CTkLabel(
-            hero_info, text="Inspecting FortiGate captive gateway & DNS route...",
+            hero_info, text="Inspecting FortiGate captive gateway and DNS route...",
             font=get_macos_font(size=12),
             text_color=APPLE_THEME["text_secondary"]
         )
@@ -555,7 +460,7 @@ class IISERBLoginApp(ctk.CTk):
 
         # Top Right Hero Status Badge
         self.badge_status = ctk.CTkButton(
-            hero_top, text="CHECKING...",
+            hero_top, text="CHECKING",
             fg_color=APPLE_THEME["accent_orange_subtle"],
             text_color=APPLE_THEME["accent_orange"],
             font=get_macos_font(size=12, weight="bold"),
@@ -569,10 +474,10 @@ class IISERBLoginApp(ctk.CTk):
         telemetry_bar.pack(fill="x", padx=20, pady=(0, 16))
         telemetry_bar.grid_columnconfigure((0, 1, 2, 3), weight=1, uniform="pill")
 
-        self.tile_latency = self._create_telemetry_tile(telemetry_bar, 0, "⚡ LATENCY", "-- ms")
-        self.tile_ip = self._create_telemetry_tile(telemetry_bar, 1, "📍 LOCAL IP", "Resolving...")
-        self.tile_dev = self._create_telemetry_tile(telemetry_bar, 2, "🔌 INTERFACE", "--")
-        self.tile_gw = self._create_telemetry_tile(telemetry_bar, 3, "🚪 GATEWAY", "--")
+        self.tile_latency = self._create_telemetry_tile(telemetry_bar, 0, "LATENCY", "-- ms")
+        self.tile_ip = self._create_telemetry_tile(telemetry_bar, 1, "LOCAL IP", "Resolving...")
+        self.tile_dev = self._create_telemetry_tile(telemetry_bar, 2, "INTERFACE", "--")
+        self.tile_gw = self._create_telemetry_tile(telemetry_bar, 3, "GATEWAY", "--")
 
         # 1px Inset Divider
         divider1 = ctk.CTkFrame(self.card_hero, height=1, fg_color=APPLE_THEME["divider"])
@@ -584,7 +489,7 @@ class IISERBLoginApp(ctk.CTk):
 
         # Primary Apple Accent Blue Action Button
         self.btn_manual_login = ctk.CTkButton(
-            action_row, text="🚀 Force Login (⌘L)",
+            action_row, text="Force Login Now",
             font=get_macos_font(size=13, weight="bold"),
             fg_color=APPLE_THEME["accent_blue"],
             hover_color=APPLE_THEME["accent_blue_hover"],
@@ -594,19 +499,19 @@ class IISERBLoginApp(ctk.CTk):
         self.btn_manual_login.pack(side="left", expand=True, fill="x", padx=(0, 8))
 
         # Secondary Tonal Action Buttons
-        self.btn_refresh = self._create_tonal_btn(action_row, "🔄 Check", self.refresh_all_status)
+        self.btn_refresh = self._create_tonal_btn(action_row, "Check Now", self.refresh_all_status)
         self.btn_refresh.pack(side="left", padx=(0, 8))
 
-        self.btn_reconnect_lan = self._create_tonal_btn(action_row, "🔄 Reset Link", self._handle_reconnect_lan)
+        self.btn_reconnect_lan = self._create_tonal_btn(action_row, "Reset Link", self._handle_reconnect_lan)
         self.btn_reconnect_lan.pack(side="left", padx=(0, 8))
 
-        self.btn_hard_restart = self._create_tonal_btn(action_row, "⚡ Hard Reset", self._handle_hard_restart_lan)
+        self.btn_hard_restart = self._create_tonal_btn(action_row, "Hard LAN Reset", self._handle_hard_restart_lan)
         self.btn_hard_restart.pack(side="left", padx=(0, 8))
 
-        self.btn_open_portal = self._create_tonal_btn(action_row, "🌐 Portal", self._open_portal_browser)
+        self.btn_open_portal = self._create_tonal_btn(action_row, "Open Portal", self._open_portal_browser)
         self.btn_open_portal.pack(side="left", padx=(0, 8))
 
-        self.btn_logout = self._create_tonal_btn(action_row, "🚪 Logout", self._handle_logout)
+        self.btn_logout = self._create_tonal_btn(action_row, "Logout", self._handle_logout)
         self.btn_logout.pack(side="left")
 
         # Action status notification label
@@ -671,13 +576,13 @@ class IISERBLoginApp(ctk.CTk):
         svc_btn_box = ctk.CTkFrame(svc_body, fg_color="transparent")
         svc_btn_box.grid(row=0, column=1, sticky="e")
 
-        self.btn_svc_start = self._create_tonal_btn(svc_btn_box, "▶ Start", lambda: self._handle_service_action("start"))
+        self.btn_svc_start = self._create_tonal_btn(svc_btn_box, "Start", lambda: self._handle_service_action("start"))
         self.btn_svc_start.pack(side="left", padx=(0, 6))
 
-        self.btn_svc_stop = self._create_tonal_btn(svc_btn_box, "⏹ Stop", lambda: self._handle_service_action("stop"))
+        self.btn_svc_stop = self._create_tonal_btn(svc_btn_box, "Stop", lambda: self._handle_service_action("stop"))
         self.btn_svc_stop.pack(side="left", padx=(0, 6))
 
-        self.btn_svc_restart = self._create_tonal_btn(svc_btn_box, "🔄 Restart", lambda: self._handle_service_action("restart"))
+        self.btn_svc_restart = self._create_tonal_btn(svc_btn_box, "Restart", lambda: self._handle_service_action("restart"))
         self.btn_svc_restart.pack(side="left")
 
         return frame
@@ -734,7 +639,7 @@ class IISERBLoginApp(ctk.CTk):
         card_creds.pack(fill="x", pady=(0, 14))
 
         ctk.CTkLabel(
-            card_creds, text="Account & LDAP Credentials",
+            card_creds, text="Account and LDAP Credentials",
             font=get_macos_font(size=15, weight="bold"),
             text_color=APPLE_THEME["text_primary"]
         ).pack(anchor="w", padx=20, pady=(16, 12))
@@ -777,7 +682,7 @@ class IISERBLoginApp(ctk.CTk):
         pass_inner.grid_columnconfigure(0, weight=1)
 
         self.entry_password = ctk.CTkEntry(
-            pass_inner, show="•", height=34,
+            pass_inner, show="*", height=34,
             corner_radius=APPLE_THEME["radius_entry"],
             placeholder_text="LDAP password",
             font=get_macos_font(size=13),
@@ -802,7 +707,7 @@ class IISERBLoginApp(ctk.CTk):
         card_opts.pack(fill="x", pady=(0, 14))
 
         ctk.CTkLabel(
-            card_opts, text="Connection & Timing Parameters",
+            card_opts, text="Connection and Timing Parameters",
             font=get_macos_font(size=15, weight="bold"),
             text_color=APPLE_THEME["text_primary"]
         ).pack(anchor="w", padx=20, pady=(16, 12))
@@ -932,7 +837,7 @@ class IISERBLoginApp(ctk.CTk):
         card_auto.pack(fill="x", pady=(0, 14))
 
         ctk.CTkLabel(
-            card_auto, text="Resiliency & Desktop Alerts",
+            card_auto, text="Resiliency and Desktop Alerts",
             font=get_macos_font(size=15, weight="bold"),
             text_color=APPLE_THEME["text_primary"]
         ).pack(anchor="w", padx=20, pady=(16, 12))
@@ -971,7 +876,7 @@ class IISERBLoginApp(ctk.CTk):
         btn_row.pack(fill="x", pady=(4, 16))
 
         self.btn_save_settings = ctk.CTkButton(
-            btn_row, text="💾 Save Settings (↵)", height=38,
+            btn_row, text="Save Settings", height=38,
             font=get_macos_font(size=13, weight="bold"),
             fg_color=APPLE_THEME["accent_blue"],
             hover_color=APPLE_THEME["accent_blue_hover"],
@@ -981,7 +886,7 @@ class IISERBLoginApp(ctk.CTk):
         self.btn_save_settings.pack(side="left", padx=(0, 10))
 
         self.btn_reset_defaults = self._create_tonal_btn(
-            btn_row, "↺ Reset Defaults", self._load_defaults_into_ui
+            btn_row, "Reset Defaults", self._load_defaults_into_ui
         )
         self.btn_reset_defaults.pack(side="left")
 
@@ -996,7 +901,7 @@ class IISERBLoginApp(ctk.CTk):
         return frame
 
     # -------------------------------------------------------------------------
-    # TAB 3: LIVE CONSOLE (macOS Console.app Dark Aesthetic)
+    # TAB 3: LIVE CONSOLE (Clean Stream View)
     # -------------------------------------------------------------------------
     def _build_logs_tab(self) -> ctk.CTkFrame:
         frame = ctk.CTkFrame(self.content_container, fg_color="transparent")
@@ -1005,7 +910,7 @@ class IISERBLoginApp(ctk.CTk):
         top_bar.pack(fill="x", pady=(0, 12))
 
         lbl_head = ctk.CTkLabel(
-            top_bar, text="Console.app Stream",
+            top_bar, text="Console Stream",
             font=get_macos_font(size=16, weight="bold"),
             text_color=APPLE_THEME["text_primary"]
         )
@@ -1013,7 +918,7 @@ class IISERBLoginApp(ctk.CTk):
 
         # Real-time search filter box
         self.entry_filter_logs = ctk.CTkEntry(
-            top_bar, placeholder_text="🔍 Filter log entries...",
+            top_bar, placeholder_text="Filter log entries...",
             width=210, height=28, corner_radius=APPLE_THEME["radius_pill"],
             font=get_macos_font(size=12),
             fg_color=APPLE_THEME["entry_bg"], border_color=APPLE_THEME["entry_border"]
@@ -1030,10 +935,10 @@ class IISERBLoginApp(ctk.CTk):
         self.chk_auto_scroll.pack(side="right", padx=(10, 0))
         self.chk_auto_scroll.select()
 
-        self.btn_clear_logs = self._create_tonal_btn(top_bar, "🗑 Clear", self._clear_logs)
+        self.btn_clear_logs = self._create_tonal_btn(top_bar, "Clear", self._clear_logs)
         self.btn_clear_logs.pack(side="right", padx=(6, 0))
 
-        self.btn_copy_logs = self._create_tonal_btn(top_bar, "📋 Copy", self._copy_logs)
+        self.btn_copy_logs = self._create_tonal_btn(top_bar, "Copy", self._copy_logs)
         self.btn_copy_logs.pack(side="right")
 
         # Dark Monospaced Terminal Frame
@@ -1070,7 +975,7 @@ class IISERBLoginApp(ctk.CTk):
         ).pack(side="left")
 
         self.btn_run_diag = ctk.CTkButton(
-            header, text="▶ Run Full Diagnostics", width=160, height=34,
+            header, text="Run Full Diagnostics", width=160, height=34,
             font=get_macos_font(size=12, weight="bold"),
             fg_color=APPLE_THEME["accent_blue"],
             hover_color=APPLE_THEME["accent_blue_hover"],
@@ -1095,7 +1000,7 @@ class IISERBLoginApp(ctk.CTk):
         self.txt_diag.pack(fill="both", expand=True, padx=8, pady=8)
         self.txt_diag.insert(
             "1.0",
-            "Apple macOS Network Doctor Ready.\nClick 'Run Full Diagnostics' to test DNS, ICMP echo, and FortiGate gateway challenge response.\n"
+            "Network Doctor Ready.\nClick 'Run Full Diagnostics' to test DNS, ICMP echo, and FortiGate gateway challenge response.\n"
         )
 
         return frame
@@ -1113,7 +1018,6 @@ class IISERBLoginApp(ctk.CTk):
             (self.btn_nav_settings, "settings"),
         ]
 
-        # Update sidebar nav button active pill highlights
         for btn, name in nav_map:
             if name == tab_name:
                 btn.configure(
@@ -1128,7 +1032,6 @@ class IISERBLoginApp(ctk.CTk):
                     font=get_macos_font(size=13, weight="normal")
                 )
 
-        # Hide other tabs and reveal selected tab
         self.tab_status.pack_forget()
         self.tab_settings.pack_forget()
         self.tab_logs.pack_forget()
@@ -1147,10 +1050,6 @@ class IISERBLoginApp(ctk.CTk):
 
     def _change_appearance_mode(self, new_mode: str):
         ctk.set_appearance_mode(new_mode.lower())
-        is_dark = new_mode.lower() == "dark"
-        bg_col = "#252528" if is_dark else "#ECECEC"
-        if hasattr(self, "dot_sidebar"):
-            self.dot_sidebar.set_bg(bg_col)
 
     # =========================================================================
     # SYSTEM TRAY INTEGRATION (pystray)
@@ -1171,13 +1070,12 @@ class IISERBLoginApp(ctk.CTk):
             draw = ImageDraw.Draw(overlay)
 
             colors = {
-                "online":   (52, 199, 89, 255),   # Apple Green
-                "offline":  (255, 59, 48, 255),   # Apple Red
-                "checking": (255, 149, 0, 255),  # Apple Amber
+                "online":   (52, 199, 89, 255),
+                "offline":  (255, 59, 48, 255),
+                "checking": (255, 149, 0, 255),
             }
             dot_color = colors.get(status, colors["offline"])
 
-            # Outer dark stroke + inner vibrant dot
             cx, cy, r = 50, 50, 9
             draw.ellipse((cx - r - 2, cy - r - 2, cx + r + 2, cy + r + 2), fill=(24, 24, 27, 230))
             draw.ellipse((cx - r, cy - r, cx + r, cy + r), fill=dot_color)
@@ -1190,8 +1088,8 @@ class IISERBLoginApp(ctk.CTk):
         try:
             menu_items = [
                 pystray.MenuItem("Open IISERB Portal", lambda: self._restore_and_navigate("status"), default=True),
-                pystray.MenuItem("⚡ Force Login", lambda: self._handle_manual_login()),
-                pystray.MenuItem("🔄 Reset Link", lambda: self._handle_reconnect_lan()),
+                pystray.MenuItem("Force Login", lambda: self._handle_manual_login()),
+                pystray.MenuItem("Reset Link", lambda: self._handle_reconnect_lan()),
                 pystray.Menu.SEPARATOR,
                 pystray.MenuItem("Preferences...", lambda: self._restore_and_navigate("settings")),
                 pystray.Menu.SEPARATOR,
@@ -1250,16 +1148,16 @@ class IISERBLoginApp(ctk.CTk):
 
         def update():
             if is_online:
-                self.hero_dot.set_status("online")
+                self.hero_dot.configure(fg_color=APPLE_THEME["accent_green"])
                 self.lbl_hero_title.configure(text="Internet Connected")
-                self.lbl_hero_sub.configure(text=f"Traffic authenticated via FortiGate · Ping latency {latency:.1f} ms")
+                self.lbl_hero_sub.configure(text=f"Traffic authenticated via FortiGate - Ping latency {latency:.1f} ms")
                 self.badge_status.configure(
-                    text="● CONNECTED",
+                    text="CONNECTED",
                     fg_color=APPLE_THEME["accent_green_subtle"],
                     text_color=APPLE_THEME["accent_green"]
                 )
                 self.tile_latency.configure(text=f"{latency:.1f} ms")
-                self.dot_sidebar.set_status("online")
+                self.dot_sidebar.configure(fg_color=APPLE_THEME["accent_green"])
                 self.lbl_sidebar_status_text.configure(text=f"Online ({latency:.0f} ms)")
                 if self.tray_icon and TRAY_AVAILABLE:
                     try:
@@ -1267,16 +1165,16 @@ class IISERBLoginApp(ctk.CTk):
                     except Exception:
                         pass
             else:
-                self.hero_dot.set_status("offline")
+                self.hero_dot.configure(fg_color=APPLE_THEME["accent_red"])
                 self.lbl_hero_title.configure(text="Captive Challenge Active")
                 self.lbl_hero_sub.configure(text="Authentication required by FortiGate gateway firewall")
                 self.badge_status.configure(
-                    text="● ACTION REQUIRED",
+                    text="ACTION REQUIRED",
                     fg_color=APPLE_THEME["accent_red_subtle"],
                     text_color=APPLE_THEME["accent_red"]
                 )
                 self.tile_latency.configure(text="Timeout")
-                self.dot_sidebar.set_status("offline")
+                self.dot_sidebar.configure(fg_color=APPLE_THEME["accent_red"])
                 self.lbl_sidebar_status_text.configure(text="Offline (Captive)")
                 if self.tray_icon and TRAY_AVAILABLE:
                     try:
@@ -1297,7 +1195,7 @@ class IISERBLoginApp(ctk.CTk):
             if status["active"]:
                 pid_txt = f" (PID {status['pid']})" if status["pid"] else ""
                 self.lbl_svc_capsule.configure(
-                    text=f"● Active{pid_txt}",
+                    text=f"Active{pid_txt}",
                     fg_color=APPLE_THEME["accent_green_subtle"],
                     text_color=APPLE_THEME["accent_green"]
                 )
@@ -1305,7 +1203,7 @@ class IISERBLoginApp(ctk.CTk):
                 self.btn_svc_stop.configure(state="normal")
             else:
                 self.lbl_svc_capsule.configure(
-                    text="⚪ Inactive (Stopped)",
+                    text="Inactive (Stopped)",
                     fg_color=APPLE_THEME["button_tonal_bg"],
                     text_color=APPLE_THEME["text_secondary"]
                 )
@@ -1339,9 +1237,9 @@ class IISERBLoginApp(ctk.CTk):
         threading.Thread(target=lambda: backend.control_service(action), daemon=True).start()
 
     def _handle_manual_login(self):
-        self.btn_manual_login.configure(state="disabled", text="⏳ Authenticating...")
+        self.btn_manual_login.configure(state="disabled", text="Authenticating...")
         self.lbl_action_msg.configure(
-            text="Submitting encrypted credentials to FortiGate captive gateway...",
+            text="Submitting credentials to FortiGate captive gateway...",
             text_color=APPLE_THEME["text_secondary"]
         )
 
@@ -1349,7 +1247,7 @@ class IISERBLoginApp(ctk.CTk):
             ok, msg = backend.perform_login()
 
             def finish():
-                self.btn_manual_login.configure(state="normal", text="🚀 Force Login (⌘L)")
+                self.btn_manual_login.configure(state="normal", text="Force Login Now")
                 self.lbl_action_msg.configure(
                     text=msg, text_color=APPLE_THEME["accent_green"] if ok else APPLE_THEME["accent_red"]
                 )
@@ -1360,7 +1258,7 @@ class IISERBLoginApp(ctk.CTk):
         threading.Thread(target=task, daemon=True).start()
 
     def _handle_reconnect_lan(self):
-        self.btn_reconnect_lan.configure(state="disabled", text="⏳ Resetting...")
+        self.btn_reconnect_lan.configure(state="disabled", text="Resetting...")
         self.lbl_action_msg.configure(
             text="Refreshing network link (non-destructive ARP sync)...",
             text_color=APPLE_THEME["text_secondary"]
@@ -1370,7 +1268,7 @@ class IISERBLoginApp(ctk.CTk):
             ok, msg = backend.bounce_interface()
 
             def finish():
-                self.btn_reconnect_lan.configure(state="normal", text="🔄 Reset Link")
+                self.btn_reconnect_lan.configure(state="normal", text="Reset Link")
                 self.lbl_action_msg.configure(
                     text=msg, text_color=APPLE_THEME["accent_green"] if ok else APPLE_THEME["accent_red"]
                 )
@@ -1381,7 +1279,7 @@ class IISERBLoginApp(ctk.CTk):
         threading.Thread(target=task, daemon=True).start()
 
     def _handle_hard_restart_lan(self):
-        self.btn_hard_restart.configure(state="disabled", text="⏳ Resetting...")
+        self.btn_hard_restart.configure(state="disabled", text="Resetting...")
         self.lbl_action_msg.configure(
             text="Scheduling auto-reconnect timer in 10s and cycling Ethernet connection...",
             text_color=APPLE_THEME["accent_orange"]
@@ -1391,7 +1289,7 @@ class IISERBLoginApp(ctk.CTk):
             res = backend.hard_restart_lan(delay_sec=10)
 
             def finish():
-                self.btn_hard_restart.configure(state="normal", text="⚡ Hard Reset")
+                self.btn_hard_restart.configure(state="normal", text="Hard LAN Reset")
                 if res.get("success"):
                     self.lbl_action_msg.configure(
                         text="Interface cycled. Reconnect timer active (10s). Re-authenticating shortly...",
@@ -1431,10 +1329,10 @@ class IISERBLoginApp(ctk.CTk):
         webbrowser.open("http://neverssl.com")
 
     # =========================================================================
-    # PREFERENCES PERSISTENCE & CHAIRED ENTER ACTION
+    # PREFERENCES PERSISTENCE
     # =========================================================================
     def _handle_password_enter(self, event=None):
-        self.lbl_settings_alert.configure(text="💾 Saving credentials and initiating login...", text_color=APPLE_THEME["accent_blue"][0])
+        self.lbl_settings_alert.configure(text="Saving credentials and initiating login...", text_color=APPLE_THEME["accent_blue"][0])
         saved_ok = self._save_settings(show_message=False)
         if saved_ok:
             self._select_tab("status")
@@ -1444,7 +1342,7 @@ class IISERBLoginApp(ctk.CTk):
         if self.chk_show_pass.get() == 1:
             self.entry_password.configure(show="")
         else:
-            self.entry_password.configure(show="•")
+            self.entry_password.configure(show="*")
 
     def _update_slider_label(self, val):
         self.lbl_slider_val.configure(text=f"{int(val)}s")
@@ -1532,11 +1430,11 @@ class IISERBLoginApp(ctk.CTk):
                 msg += " (Background service restarted with new settings)"
 
             if show_message:
-                self.lbl_settings_alert.configure(text=f"✅ {msg}", text_color=APPLE_THEME["accent_green"])
+                self.lbl_settings_alert.configure(text=f"{msg}", text_color=APPLE_THEME["accent_green"])
             return True
         else:
             if show_message:
-                self.lbl_settings_alert.configure(text=f"❌ {msg}", text_color=APPLE_THEME["accent_red"])
+                self.lbl_settings_alert.configure(text=f"{msg}", text_color=APPLE_THEME["accent_red"])
             return False
 
     # =========================================================================
@@ -1600,16 +1498,16 @@ class IISERBLoginApp(ctk.CTk):
                 try:
                     import socket
                     ip = socket.gethostbyname(host)
-                    self._append_diag(f"    ✔ {host} -> {ip}")
+                    self._append_diag(f"    [PASS] {host} -> {ip}")
                 except Exception as e:
-                    self._append_diag(f"    ❌ {host} -> Resolution failed: {e}")
+                    self._append_diag(f"    [FAIL] {host} -> Resolution failed: {e}")
 
             self._append_diag(f"\n[3] External Ping Test to {target}:")
             try:
                 res = subprocess.run(["ping", "-c", "3", "-W", "2", target], stdout=subprocess.PIPE, text=True, timeout=8)
                 self._append_diag("    " + "\n    ".join(res.stdout.strip().split("\n")))
             except Exception as e:
-                self._append_diag(f"    ❌ Ping failed: {e}")
+                self._append_diag(f"    [FAIL] Ping failed: {e}")
 
             self._append_diag(f"\n[4] Captive Portal Probe ({probe}):")
             try:
@@ -1617,7 +1515,7 @@ class IISERBLoginApp(ctk.CTk):
                 headers = [line for line in res.stdout.split("\r\n") if line.strip()][:10]
                 self._append_diag("    " + "\n    ".join(headers))
             except Exception as e:
-                self._append_diag(f"    ❌ Probe failed: {e}")
+                self._append_diag(f"    [FAIL] Probe failed: {e}")
 
             self._append_diag(f"\n[5] Gateway Reachability ({gateway}):")
             try:
@@ -1625,10 +1523,10 @@ class IISERBLoginApp(ctk.CTk):
                 first_lines = res.stdout.strip().split("\n")[:6]
                 self._append_diag("    " + "\n    ".join(first_lines) if first_lines else "    (Gateway connected, closed cleanly)")
             except Exception as e:
-                self._append_diag(f"    ❌ Gateway connection: {e}")
+                self._append_diag(f"    [FAIL] Gateway connection: {e}")
 
             self._append_diag("\n=== Diagnostics Complete ===\n")
-            self.after(0, lambda: self.btn_run_diag.configure(state="normal", text="▶ Run Full Diagnostics"))
+            self.after(0, lambda: self.btn_run_diag.configure(state="normal", text="Run Full Diagnostics"))
 
         threading.Thread(target=task, daemon=True).start()
 
