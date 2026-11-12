@@ -116,20 +116,57 @@ def save_config(new_config: Dict[str, Any]) -> Tuple[bool, str]:
         return False, f"Failed to save settings: {e}"
 
 
-def send_notification(title: str, message: str, urgency: str = "normal") -> bool:
-    """Send a native desktop notification via notify-send if enabled and available."""
+def _play_notification_sound(urgency: str = "normal"):
+    """Triggers subtle system audio feedback without crashing if sound utilities are absent."""
+    try:
+        if sys.platform == "darwin":
+            sound_file = "/System/Library/Sounds/Glass.aiff" if urgency == "normal" else "/System/Library/Sounds/Basso.aiff"
+            subprocess.Popen(["afplay", sound_file], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        else:
+            sound_id = "network-connected" if urgency == "normal" else "dialog-warning"
+            if subprocess.run(["which", "canberra-gtk-play"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0:
+                subprocess.Popen(["canberra-gtk-play", "-i", sound_id], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception:
+        pass
+
+
+def send_notification(title: str, message: str, urgency: str = "normal", sound: bool = True) -> bool:
+    """Send a native desktop notification with app icon, categorization, and audio cue."""
     cfg = load_config()
     if not cfg.get("NOTIFICATIONS_ENABLED", True):
         return False
-    try:
-        if subprocess.run(["which", "notify-send"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0:
-            subprocess.run(
-                ["notify-send", "-a", "IISERB Login", "-u", urgency, title, message],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=3
-            )
+
+    pkg_dir = os.path.dirname(os.path.abspath(__file__))
+    icon_path = os.path.join(pkg_dir, "icon.png")
+
+    # 1. Linux / BSD: notify-send
+    if sys.platform != "darwin":
+        try:
+            if subprocess.run(["which", "notify-send"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0:
+                cmd = ["notify-send", "-a", "IISERB Login", "-u", urgency, "-c", "network"]
+                if os.path.exists(icon_path):
+                    cmd.extend(["-i", icon_path])
+                cmd.extend(["-h", "string:desktop-entry:iiserb-portal-login", title, message])
+                subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=3)
+                if sound and urgency != "low":
+                    _play_notification_sound(urgency)
+                return True
+        except Exception:
+            pass
+
+    # 2. macOS: osascript native notification
+    elif sys.platform == "darwin":
+        try:
+            safe_title = title.replace('"', '\\"')
+            safe_msg = message.replace('"', '\\"')
+            script = f'display notification "{safe_msg}" with title "{safe_title}"'
+            subprocess.run(["osascript", "-e", script], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=3)
+            if sound and urgency != "low":
+                _play_notification_sound(urgency)
             return True
-    except Exception:
-        pass
+        except Exception:
+            pass
+
     return False
 
 
