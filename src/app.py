@@ -5,6 +5,7 @@ Engineered to Apple macOS Human Interface Guidelines (HIG) standards:
 - Modern macOS Source List Sidebar with clean grouped categories
 - Inset Grouped Table Cards for Preferences with hairline dividers
 - Clean vector status indicators with zero font/glyph dependencies
+- Floating macOS HUD tooltips on hover across all options & controls
 - Full keyboard ergonomics, real-time log stream, and network diagnostics
 """
 
@@ -27,6 +28,7 @@ import threading
 import time
 import webbrowser
 import subprocess
+import tkinter as tk
 from typing import Optional, Tuple, Dict, Any
 
 import customtkinter as ctk
@@ -154,6 +156,149 @@ ctk.set_default_color_theme("blue")
 
 
 # -----------------------------------------------------------------------------
+# macOS Floating HUD Tooltip Implementation
+# -----------------------------------------------------------------------------
+class MacOSTooltip:
+    """
+    Apple macOS HUD style floating tooltip.
+    Appears after 400ms hover delay near the cursor with screen boundary detection.
+    Dismisses smoothly on mouse leave or button press.
+    """
+    def __init__(self, widget, text: str, delay: int = 400):
+        self.widget = widget
+        self.text = text
+        self.delay = delay
+        self.tip_window = None
+        self._after_id = None
+        self._bind_all(self.widget)
+
+    def _bind_all(self, target):
+        try:
+            target.bind("<Enter>", self._on_enter, add="+")
+            target.bind("<Leave>", self._on_leave, add="+")
+            target.bind("<ButtonPress>", self._on_press, add="+")
+        except Exception:
+            pass
+
+        # Recursively bind to internal CTk canvas or label children
+        try:
+            for child in target.winfo_children():
+                self._bind_all(child)
+        except Exception:
+            pass
+
+    def _on_enter(self, event=None):
+        self._cancel()
+        try:
+            self._after_id = self.widget.after(self.delay, self._show)
+        except Exception:
+            pass
+
+    def _on_leave(self, event=None):
+        # Prevent flickering when mouse moves between child elements
+        try:
+            px = self.widget.winfo_pointerx()
+            py = self.widget.winfo_pointery()
+            wx = self.widget.winfo_rootx()
+            wy = self.widget.winfo_rooty()
+            ww = self.widget.winfo_width()
+            wh = self.widget.winfo_height()
+            if wx <= px <= wx + ww and wy <= py <= wy + wh:
+                return
+        except Exception:
+            pass
+
+        self._cancel()
+        self._hide()
+
+    def _on_press(self, event=None):
+        self._cancel()
+        self._hide()
+
+    def _cancel(self):
+        if self._after_id:
+            try:
+                self.widget.after_cancel(self._after_id)
+            except Exception:
+                pass
+            self._after_id = None
+
+    def _show(self):
+        if not self.widget.winfo_exists():
+            return
+        self._hide()
+
+        try:
+            px = self.widget.winfo_pointerx()
+            py = self.widget.winfo_pointery()
+        except Exception:
+            return
+
+        x = px + 15
+        y = py + 20
+
+        self.tip_window = tw = tk.Toplevel(self.widget)
+        tw.wm_overrideredirect(True)
+        try:
+            tw.wm_attributes("-topmost", True)
+        except Exception:
+            pass
+
+        # Set backdrop matching appearance
+        is_dark = ctk.get_appearance_mode() == "Dark"
+        bg_col = "#2C2C2E" if is_dark else "#FFFFFF"
+        tw.configure(bg=bg_col)
+
+        frame = ctk.CTkFrame(
+            tw, corner_radius=8,
+            border_width=1,
+            border_color=APPLE_THEME["card_border"],
+            fg_color=APPLE_THEME["card_bg"]
+        )
+        frame.pack()
+
+        lbl = ctk.CTkLabel(
+            frame, text=self.text,
+            font=get_macos_font(size=11),
+            text_color=APPLE_THEME["text_primary"],
+            wraplength=270, justify="left",
+            padx=10, pady=6
+        )
+        lbl.pack()
+
+        tw.update_idletasks()
+        w = tw.winfo_reqwidth()
+        h = tw.winfo_reqheight()
+        sw = self.widget.winfo_screenwidth()
+        sh = self.widget.winfo_screenheight()
+
+        # Screen boundary clamping
+        if x + w > sw - 12:
+            x = max(10, px - w - 10)
+        if y + h > sh - 12:
+            y = max(10, py - h - 10)
+        if x < 10:
+            x = 10
+        if y < 10:
+            y = 10
+
+        tw.geometry(f"+{x}+{y}")
+
+    def _hide(self):
+        if self.tip_window:
+            try:
+                self.tip_window.destroy()
+            except Exception:
+                pass
+            self.tip_window = None
+
+
+def add_tooltip(widget, text: str, delay: int = 400) -> MacOSTooltip:
+    """Helper to attach a floating macOS tooltip to any widget."""
+    return MacOSTooltip(widget, text, delay=delay)
+
+
+# -----------------------------------------------------------------------------
 # Main Application Window
 # -----------------------------------------------------------------------------
 class IISERBLoginApp(ctk.CTk):
@@ -247,7 +392,7 @@ class IISERBLoginApp(ctk.CTk):
             self.lbl_settings_alert.configure(text="")
 
     # =========================================================================
-    # SIDEBAR: macOS Source List Navigation (No traffic lights, clean layout)
+    # SIDEBAR: macOS Source List Navigation
     # =========================================================================
     def _create_sidebar(self):
         self.sidebar_frame = ctk.CTkFrame(
@@ -275,13 +420,14 @@ class IISERBLoginApp(ctk.CTk):
         )
         app_subtitle.pack(anchor="w", pady=(1, 0))
 
-        # 2. Sidebar Live Connection Capsule with Crisp Vector Dot
+        # 2. Sidebar Live Connection Capsule with Vector Dot
         self.pill_sidebar_status = ctk.CTkFrame(
             self.sidebar_frame, corner_radius=12,
             fg_color=APPLE_THEME["card_bg"],
             border_width=1, border_color=APPLE_THEME["card_border"]
         )
         self.pill_sidebar_status.pack(fill="x", padx=14, pady=(0, 18))
+        add_tooltip(self.pill_sidebar_status, "Real-time network connection health indicator.")
 
         dot_box = ctk.CTkFrame(self.pill_sidebar_status, fg_color="transparent")
         dot_box.pack(side="left", padx=(10, 4), pady=6)
@@ -309,12 +455,15 @@ class IISERBLoginApp(ctk.CTk):
 
         self.btn_nav_status = self._create_nav_pill("Dashboard", "status")
         self.btn_nav_status.pack(fill="x", padx=10, pady=2)
+        add_tooltip(self.btn_nav_status, "View real-time connection status, telemetry gauges, and quick action controls.")
 
         self.btn_nav_logs = self._create_nav_pill("Live Console", "logs")
         self.btn_nav_logs.pack(fill="x", padx=10, pady=2)
+        add_tooltip(self.btn_nav_logs, "Monitor live authentication logs, keepalive pulses, and systemd service events.")
 
         self.btn_nav_diag = self._create_nav_pill("Network Doctor", "diag")
         self.btn_nav_diag.pack(fill="x", padx=10, pady=2)
+        add_tooltip(self.btn_nav_diag, "Run automated network reachability and captive portal diagnostics.")
 
         # 4. Navigation Group 2: CONFIGURATION
         lbl_sec_cfg = ctk.CTkLabel(
@@ -326,6 +475,7 @@ class IISERBLoginApp(ctk.CTk):
 
         self.btn_nav_settings = self._create_nav_pill("Preferences", "settings")
         self.btn_nav_settings.pack(fill="x", padx=10, pady=2)
+        add_tooltip(self.btn_nav_settings, "Configure LDAP credentials, ping intervals, gateway URLs, and automation settings.")
 
         # Spacer pushes appearance menu to bottom
         spacer = ctk.CTkFrame(self.sidebar_frame, fg_color="transparent")
@@ -350,6 +500,7 @@ class IISERBLoginApp(ctk.CTk):
         )
         self.seg_theme.pack(fill="x")
         self.seg_theme.set("Dark")
+        add_tooltip(self.seg_theme, "Toggle between Dark mode, Light mode, or follow the system appearance.")
 
     def _create_nav_pill(self, label: str, tab_id: str) -> ctk.CTkButton:
         return ctk.CTkButton(
@@ -427,6 +578,7 @@ class IISERBLoginApp(ctk.CTk):
             border_width=1, border_color=APPLE_THEME["card_border"]
         )
         self.card_hero.pack(fill="x", pady=(0, 14))
+        add_tooltip(self.card_hero, "Shows your current campus network connectivity and gateway authentication state.")
 
         hero_top = ctk.CTkFrame(self.card_hero, fg_color="transparent")
         hero_top.pack(fill="x", padx=20, pady=(18, 12))
@@ -468,6 +620,7 @@ class IISERBLoginApp(ctk.CTk):
             height=30, hover=False
         )
         self.badge_status.pack(side="right")
+        add_tooltip(self.badge_status, "Current authorization status with the campus firewall.")
 
         # 4-Pill Inset Telemetry Bar
         telemetry_bar = ctk.CTkFrame(self.card_hero, fg_color="transparent")
@@ -475,9 +628,16 @@ class IISERBLoginApp(ctk.CTk):
         telemetry_bar.grid_columnconfigure((0, 1, 2, 3), weight=1, uniform="pill")
 
         self.tile_latency = self._create_telemetry_tile(telemetry_bar, 0, "LATENCY", "-- ms")
+        add_tooltip(self.tile_latency, "Round-trip network latency to the ping target (1.1.1.1).")
+
         self.tile_ip = self._create_telemetry_tile(telemetry_bar, 1, "LOCAL IP", "Resolving...")
+        add_tooltip(self.tile_ip, "Current IPv4 address assigned to your machine by campus DHCP.")
+
         self.tile_dev = self._create_telemetry_tile(telemetry_bar, 2, "INTERFACE", "--")
+        add_tooltip(self.tile_dev, "Active hardware network adapter used for campus connectivity.")
+
         self.tile_gw = self._create_telemetry_tile(telemetry_bar, 3, "GATEWAY", "--")
+        add_tooltip(self.tile_gw, "Default network gateway IP routing your traffic to the IISERB firewall.")
 
         # 1px Inset Divider
         divider1 = ctk.CTkFrame(self.card_hero, height=1, fg_color=APPLE_THEME["divider"])
@@ -497,22 +657,28 @@ class IISERBLoginApp(ctk.CTk):
             height=36, command=self._handle_manual_login
         )
         self.btn_manual_login.pack(side="left", expand=True, fill="x", padx=(0, 8))
+        add_tooltip(self.btn_manual_login, "Submit your saved LDAP credentials to the FortiGate gateway immediately.")
 
         # Secondary Tonal Action Buttons
         self.btn_refresh = self._create_tonal_btn(action_row, "Check Now", self.refresh_all_status)
         self.btn_refresh.pack(side="left", padx=(0, 8))
+        add_tooltip(self.btn_refresh, "Perform an instant internet reachability and latency probe.")
 
         self.btn_reconnect_lan = self._create_tonal_btn(action_row, "Reset Link", self._handle_reconnect_lan)
         self.btn_reconnect_lan.pack(side="left", padx=(0, 8))
+        add_tooltip(self.btn_reconnect_lan, "Non-destructively flushes ARP cache and link state without dropping active SSH sessions.")
 
         self.btn_hard_restart = self._create_tonal_btn(action_row, "Hard LAN Reset", self._handle_hard_restart_lan)
         self.btn_hard_restart.pack(side="left", padx=(0, 8))
+        add_tooltip(self.btn_hard_restart, "Schedules an automatic 10-second reconnect timer before cycling the physical Ethernet link.")
 
         self.btn_open_portal = self._create_tonal_btn(action_row, "Open Portal", self._open_portal_browser)
         self.btn_open_portal.pack(side="left", padx=(0, 8))
+        add_tooltip(self.btn_open_portal, "Opens the captive portal HTTP login page in your default web browser.")
 
         self.btn_logout = self._create_tonal_btn(action_row, "Logout", self._handle_logout)
         self.btn_logout.pack(side="left")
+        add_tooltip(self.btn_logout, "Terminates the active authenticated session with the campus gateway.")
 
         # Action status notification label
         self.lbl_action_msg = ctk.CTkLabel(
@@ -528,6 +694,7 @@ class IISERBLoginApp(ctk.CTk):
             border_width=1, border_color=APPLE_THEME["card_border"]
         )
         card_service.pack(fill="x", pady=(0, 14))
+        add_tooltip(card_service, "Controls the background systemd keepalive daemon (portal-autologin.service).")
 
         svc_header = ctk.CTkFrame(card_service, fg_color="transparent")
         svc_header.pack(fill="x", padx=20, pady=(16, 12))
@@ -547,13 +714,14 @@ class IISERBLoginApp(ctk.CTk):
             height=26, padx=10
         )
         self.lbl_svc_capsule.pack(side="right")
+        add_tooltip(self.lbl_svc_capsule, "Live operational status of the user systemd background unit.")
 
         svc_body = ctk.CTkFrame(card_service, fg_color="transparent")
         svc_body.pack(fill="x", padx=20, pady=(0, 16))
         svc_body.grid_columnconfigure(0, weight=1)
         svc_body.grid_columnconfigure(1, weight=1)
 
-        # Autostart Switch (Styled with Apple Green progress track)
+        # Autostart Switch
         svc_sw_box = ctk.CTkFrame(svc_body, fg_color="transparent")
         svc_sw_box.grid(row=0, column=0, sticky="w")
 
@@ -566,6 +734,7 @@ class IISERBLoginApp(ctk.CTk):
             fg_color=("#D1D1D6", "#3A3A3C")
         )
         self.switch_autostart.pack(anchor="w")
+        add_tooltip(self.switch_autostart, "Enable or disable automatic background authentication on system startup.")
 
         ctk.CTkLabel(
             svc_sw_box, text="Manages user systemd unit portal-autologin.service",
@@ -578,12 +747,15 @@ class IISERBLoginApp(ctk.CTk):
 
         self.btn_svc_start = self._create_tonal_btn(svc_btn_box, "Start", lambda: self._handle_service_action("start"))
         self.btn_svc_start.pack(side="left", padx=(0, 6))
+        add_tooltip(self.btn_svc_start, "Start the background keepalive daemon immediately.")
 
         self.btn_svc_stop = self._create_tonal_btn(svc_btn_box, "Stop", lambda: self._handle_service_action("stop"))
         self.btn_svc_stop.pack(side="left", padx=(0, 6))
+        add_tooltip(self.btn_svc_stop, "Stop the background keepalive daemon.")
 
         self.btn_svc_restart = self._create_tonal_btn(svc_btn_box, "Restart", lambda: self._handle_service_action("restart"))
         self.btn_svc_restart.pack(side="left")
+        add_tooltip(self.btn_svc_restart, "Restart the background daemon to apply any configuration changes.")
 
         return frame
 
@@ -663,6 +835,7 @@ class IISERBLoginApp(ctk.CTk):
         )
         self.entry_username.grid(row=0, column=1, sticky="ew")
         self.entry_username.bind("<Return>", lambda e: self.entry_password.focus_set())
+        add_tooltip(self.entry_username, "Your IISER Bhopal LDAP login ID (e.g. your roll number).")
 
         # Row 2: Divider
         ctk.CTkFrame(card_creds, height=1, fg_color=APPLE_THEME["divider"]).pack(fill="x", padx=20, pady=(0, 10))
@@ -691,12 +864,14 @@ class IISERBLoginApp(ctk.CTk):
         )
         self.entry_password.grid(row=0, column=0, sticky="ew", padx=(0, 10))
         self.entry_password.bind("<Return>", self._handle_password_enter)
+        add_tooltip(self.entry_password, "Your LDAP network authentication password (stored securely with 0600 file permissions).")
 
         self.chk_show_pass = ctk.CTkCheckBox(
             pass_inner, text="Show", width=60, command=self._toggle_password_visibility,
             font=get_macos_font(size=12)
         )
         self.chk_show_pass.grid(row=0, column=1)
+        add_tooltip(self.chk_show_pass, "Toggle visibility of the password characters.")
 
         # CARD 2: NETWORK & KEEPALIVE TIMING
         card_opts = ctk.CTkFrame(
@@ -728,6 +903,7 @@ class IISERBLoginApp(ctk.CTk):
             fg_color=APPLE_THEME["entry_bg"], border_color=APPLE_THEME["entry_border"]
         )
         self.entry_ping_target.grid(row=0, column=1, sticky="ew")
+        add_tooltip(self.entry_ping_target, "External IP or DNS host (default: 1.1.1.1) used to verify internet connectivity.")
 
         # Divider
         ctk.CTkFrame(card_opts, height=1, fg_color=APPLE_THEME["divider"]).pack(fill="x", padx=20, pady=(0, 10))
@@ -751,6 +927,8 @@ class IISERBLoginApp(ctk.CTk):
             progress_color=APPLE_THEME["accent_blue"][0]
         )
         self.slider_interval.grid(row=0, column=0, sticky="ew", padx=(0, 12))
+        add_tooltip(self.slider_interval, "Frequency in seconds between background connection health checks.")
+
         self.lbl_slider_val = ctk.CTkLabel(
             int_box, text="60s", width=55, font=get_macos_font(size=12, weight="bold")
         )
@@ -778,6 +956,8 @@ class IISERBLoginApp(ctk.CTk):
             progress_color=APPLE_THEME["accent_blue"][0]
         )
         self.slider_ka.grid(row=0, column=0, sticky="ew", padx=(0, 12))
+        add_tooltip(self.slider_ka, "Interval in minutes between HTTP keepalive pulses sent to the gateway.")
+
         self.lbl_ka_val = ctk.CTkLabel(
             ka_box, text="3 min", width=55, font=get_macos_font(size=12, weight="bold")
         )
@@ -802,6 +982,7 @@ class IISERBLoginApp(ctk.CTk):
             fg_color=APPLE_THEME["entry_bg"], border_color=APPLE_THEME["entry_border"]
         )
         self.entry_gateway.grid(row=0, column=1, sticky="ew")
+        add_tooltip(self.entry_gateway, "URL of the FortiGate captive portal authentication gateway.")
 
         # Divider
         ctk.CTkFrame(card_opts, height=1, fg_color=APPLE_THEME["divider"]).pack(fill="x", padx=20, pady=(0, 10))
@@ -827,6 +1008,7 @@ class IISERBLoginApp(ctk.CTk):
             ]
         )
         self.combo_probe.grid(row=0, column=1, sticky="ew")
+        add_tooltip(self.combo_probe, "HTTP endpoint used to detect captive portal redirection.")
 
         # CARD 3: AUTOMATION & RESILIENCY
         card_auto = ctk.CTkFrame(
@@ -854,6 +1036,7 @@ class IISERBLoginApp(ctk.CTk):
             fg_color=("#D1D1D6", "#3A3A3C")
         )
         self.switch_notifications.pack(anchor="w")
+        add_tooltip(self.switch_notifications, "Display native desktop notifications on login success, failure, or network changes.")
 
         # Divider
         ctk.CTkFrame(card_auto, height=1, fg_color=APPLE_THEME["divider"]).pack(fill="x", padx=20, pady=(0, 10))
@@ -870,6 +1053,7 @@ class IISERBLoginApp(ctk.CTk):
             fg_color=("#D1D1D6", "#3A3A3C")
         )
         self.switch_auto_hard.pack(anchor="w")
+        add_tooltip(self.switch_auto_hard, "Automatically perform an SSH-safe hard LAN restart if the captive challenge stalls.")
 
         # Floating Bottom Action Bar
         btn_row = ctk.CTkFrame(frame, fg_color="transparent")
@@ -884,11 +1068,13 @@ class IISERBLoginApp(ctk.CTk):
             command=self._save_settings
         )
         self.btn_save_settings.pack(side="left", padx=(0, 10))
+        add_tooltip(self.btn_save_settings, "Save all settings to ~/.config/iiserb_login/config.json and reload the background service.")
 
         self.btn_reset_defaults = self._create_tonal_btn(
             btn_row, "Reset Defaults", self._load_defaults_into_ui
         )
         self.btn_reset_defaults.pack(side="left")
+        add_tooltip(self.btn_reset_defaults, "Restore all settings fields to recommended factory defaults.")
 
         self.lbl_settings_alert = ctk.CTkLabel(
             btn_row, text="", font=get_macos_font(size=12)
@@ -925,6 +1111,7 @@ class IISERBLoginApp(ctk.CTk):
         )
         self.entry_filter_logs.pack(side="left")
         self.entry_filter_logs.bind("<KeyRelease>", lambda e: self._filter_logs())
+        add_tooltip(self.entry_filter_logs, "Filter visible log entries in real time by typing keywords.")
 
         # Auto-refresh switch
         self.chk_auto_scroll = ctk.CTkSwitch(
@@ -934,12 +1121,15 @@ class IISERBLoginApp(ctk.CTk):
         )
         self.chk_auto_scroll.pack(side="right", padx=(10, 0))
         self.chk_auto_scroll.select()
+        add_tooltip(self.chk_auto_scroll, "Automatically scroll to the newest log entries as they arrive.")
 
         self.btn_clear_logs = self._create_tonal_btn(top_bar, "Clear", self._clear_logs)
         self.btn_clear_logs.pack(side="right", padx=(6, 0))
+        add_tooltip(self.btn_clear_logs, "Clear the contents of the activity log file.")
 
         self.btn_copy_logs = self._create_tonal_btn(top_bar, "Copy", self._copy_logs)
         self.btn_copy_logs.pack(side="right")
+        add_tooltip(self.btn_copy_logs, "Copy all visible log text to your system clipboard.")
 
         # Dark Monospaced Terminal Frame
         term_frame = ctk.CTkFrame(
@@ -983,6 +1173,7 @@ class IISERBLoginApp(ctk.CTk):
             command=self._start_diagnostics_thread
         )
         self.btn_run_diag.pack(side="right")
+        add_tooltip(self.btn_run_diag, "Run automated tests for network adapter, DNS resolution, ping latency, and gateway reachability.")
 
         term_frame = ctk.CTkFrame(
             frame, corner_radius=APPLE_THEME["radius_card"],
