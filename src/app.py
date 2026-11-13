@@ -29,6 +29,9 @@ import time
 import webbrowser
 import subprocess
 import tkinter as tk
+import atexit
+import tempfile
+import fcntl
 from typing import Optional, Tuple, Dict, Any
 
 import customtkinter as ctk
@@ -156,123 +159,208 @@ ctk.set_default_color_theme("blue")
 
 
 # -----------------------------------------------------------------------------
-# macOS Floating HUD Tooltip Implementation
+# macOS Floating HUD Tooltip Implementation (Singleton Manager)
 # -----------------------------------------------------------------------------
-class MacOSTooltip:
+class TooltipManager:
     """
-    Apple macOS HUD style floating tooltip.
-    Appears after 400ms hover delay near the cursor with screen boundary detection.
-    Dismisses smoothly on mouse leave or button press.
+    Apple macOS HUD style floating tooltip manager (Singleton).
+    Guarantees:
+    1. Exactly ONE tooltip window can exist on the entire display at any time.
+    2. Any existing tooltip is destroyed immediately when cursor moves or another element is scheduled.
+    3. Tooltips dismiss immediately on click, scroll, window unmap, focus loss, or tab switch.
+    4. Moving the cursor onto the tooltip window itself immediately destroys it.
+    5. Tooltip will NEVER show if root window is not visible or mouse has moved outside the widget.
+    6. All toplevels are cleaned up if the application is minimized, closed, or exited.
     """
-    def __init__(self, widget, text: str, delay: int = 400):
-        self.widget = widget
-        self.text = text
-        self.delay = delay
-        self.tip_window = None
-        self._after_id = None
-        self._bind_all(self.widget)
+    _instance: Optional["TooltipManager"] = None
 
-    def _bind_all(self, target):
-        try:
-            target.bind("<Enter>", self._on_enter, add="+")
-            target.bind("<Leave>", self._on_leave, add="+")
-            target.bind("<ButtonPress>", self._on_press, add="+")
-        except Exception:
-            pass
+    def __init__(self, root: tk.Tk):
+        TooltipManager._instance = self
+        self.root = root
+        self._tip_window: Optional[tk.Toplevel] = None
+        self._show_job: Optional[str] = None
+        self._hide_job: Optional[str] = None
+        self._current_widget = None
+        self._current_text = ""
 
-        # Recursively bind to internal CTk canvas or label children
-        try:
-            for child in target.winfo_children():
-                self._bind_all(child)
-        except Exception:
-            pass
+        # Global dismissal hooks on the root window
+        self.root.bind_all("<ButtonPress>", lambda e: self.hide(), add="+")
+        self.root.bind_all("<MouseWheel>", lambda e: self.hide(), add="+")
+        self.root.bind_all("<Button-4>", lambda e: self.hide(), add="+")
+        self.root.bind_all("<Button-5>", lambda e: self.hide(), add="+")
+        self.root.bind_all("<Key>", lambda e: self.hide(), add="+")
+        self.root.bind("<Unmap>", lambda e: self.hide(), add="+")
+        self.root.bind("<FocusOut>", lambda e: self.hide(), add="+")
 
-    def _on_enter(self, event=None):
-        self._cancel()
-        try:
-            self._after_id = self.widget.after(self.delay, self._show)
-        except Exception:
-            pass
+    @classmethod
+    def get_instance(cls, root: Optional[tk.Tk] = None) -> Optional["TooltipManager"]:
+        if cls._instance is not None:
+            return cls._instance
+        if root is not None:
+            return cls(root)
+        return None
 
-    def _on_leave(self, event=None):
-        # Prevent flickering when mouse moves between child elements
-        try:
-            px = self.widget.winfo_pointerx()
-            py = self.widget.winfo_pointery()
-            wx = self.widget.winfo_rootx()
-            wy = self.widget.winfo_rooty()
-            ww = self.widget.winfo_width()
-            wh = self.widget.winfo_height()
-            if wx <= px <= wx + ww and wy <= py <= wy + wh:
-                return
-        except Exception:
-            pass
-
-        self._cancel()
-        self._hide()
-
-    def _on_press(self, event=None):
-        self._cancel()
-        self._hide()
-
-    def _cancel(self):
-        if self._after_id:
+    def hide(self):
+        """Immediately cancel pending timers and destroy any floating tooltip window."""
+        self._cancel_show()
+        self._cancel_hide()
+        self._current_widget = None
+        self._current_text = ""
+        if self._tip_window:
             try:
-                self.widget.after_cancel(self._after_id)
+                self._tip_window.destroy()
             except Exception:
                 pass
-            self._after_id = None
+            self._tip_window = None
 
-    def _show(self):
-        if not self.widget.winfo_exists():
+    def _cancel_show(self):
+        if self._show_job:
+            try:
+                self.root.after_cancel(self._show_job)
+            except Exception:
+                pass
+            self._show_job = None
+
+    def _cancel_hide(self):
+        if self._hide_job:
+            try:
+                self.root.after_cancel(self._hide_job)
+            except Exception:
+                pass
+            self._hide_job = None
+
+    def register(self, widget, text: str, delay: int = 400):
+        """Attach tooltip text to a widget and its child elements."""
+        def on_enter(event=None):
+            self._cancel_hide()
+            # If pointer is within the same widget and it's already showing, keep it
+            if self._current_widget is widget and self._tip_window:
+                return
+
+            # Switching to another widget: kill existing tooltip immediately
+            if self._current_widget is not widget:
+                self.hide()
+
+            self._current_widget = widget
+            self._current_text = text
+            self._cancel_show()
+            self._show_job = self.root.after(delay, lambda: self._show(widget, text))
+
+        def on_leave(event=None):
+            self._cancel_show()
+            self._cancel_hide()
+            # 80ms debounce so crossing internal CTk widget boundaries doesn't flicker
+            self._hide_job = self.root.after(80, self._on_delayed_leave)
+
+        def bind_tree(target):
+            try:
+                target.bind("<Enter>", on_enter, add="+")
+                target.bind("<Leave>", on_leave, add="+")
+            except Exception:
+                pass
+            try:
+                for child in target.winfo_children():
+                    bind_tree(child)
+            except Exception:
+                pass
+
+        bind_tree(widget)
+
+    def _on_delayed_leave(self):
+        self._hide_job = None
+        self.hide()
+
+    def _show(self, widget, text: str):
+        self._show_job = None
+
+        # Verify target is still this widget and widget still exists
+        if self._current_widget is not widget or not widget.winfo_exists():
+            self.hide()
             return
-        self._hide()
 
         try:
-            px = self.widget.winfo_pointerx()
-            py = self.widget.winfo_pointery()
+            if not self.root.winfo_viewable():
+                self.hide()
+                return
+        except Exception:
+            self.hide()
+            return
+
+        # Verify pointer is actually inside the widget boundaries right now
+        try:
+            px = self.root.winfo_pointerx()
+            py = self.root.winfo_pointery()
+            wx = widget.winfo_rootx()
+            wy = widget.winfo_rooty()
+            ww = widget.winfo_width()
+            wh = widget.winfo_height()
+            if not (wx - 2 <= px <= wx + ww + 2 and wy - 2 <= py <= wy + wh + 2):
+                self.hide()
+                return
         except Exception:
             return
 
-        x = px + 15
-        y = py + 20
+        # Destroy any existing tooltip window first
+        if self._tip_window:
+            try:
+                self._tip_window.destroy()
+            except Exception:
+                pass
+            self._tip_window = None
 
-        self.tip_window = tw = tk.Toplevel(self.widget)
+        x = px + 12
+        y = py + 18
+
+        self._tip_window = tw = tk.Toplevel(self.root)
         tw.wm_overrideredirect(True)
+        try:
+            tw.wm_attributes("-type", "tooltip")
+        except Exception:
+            pass
         try:
             tw.wm_attributes("-topmost", True)
         except Exception:
             pass
 
-        # Set backdrop matching appearance
+        # CRITICAL: If pointer enters or clicks the tooltip itself, dismiss immediately!
+        tw.bind("<Enter>", lambda e: self.hide())
+        tw.bind("<ButtonPress>", lambda e: self.hide())
+
         is_dark = ctk.get_appearance_mode() == "Dark"
         bg_col = "#2C2C2E" if is_dark else "#FFFFFF"
+        border_col = "#48484A" if is_dark else "#D1D1D6"
+        text_col = "#FFFFFF" if is_dark else "#1D1D1F"
+
         tw.configure(bg=bg_col)
 
         frame = ctk.CTkFrame(
             tw, corner_radius=8,
             border_width=1,
-            border_color=APPLE_THEME["card_border"],
-            fg_color=APPLE_THEME["card_bg"]
+            border_color=border_col,
+            fg_color=bg_col
         )
         frame.pack()
+        frame.bind("<Enter>", lambda e: self.hide())
+        frame.bind("<ButtonPress>", lambda e: self.hide())
 
         lbl = ctk.CTkLabel(
-            frame, text=self.text,
+            frame, text=text,
             font=get_macos_font(size=11),
-            text_color=APPLE_THEME["text_primary"],
-            wraplength=270, justify="left",
+            text_color=text_col,
+            wraplength=280, justify="left",
             padx=10, pady=6
         )
         lbl.pack()
+        lbl.bind("<Enter>", lambda e: self.hide())
+        lbl.bind("<ButtonPress>", lambda e: self.hide())
 
         tw.update_idletasks()
         w = tw.winfo_reqwidth()
         h = tw.winfo_reqheight()
-        sw = self.widget.winfo_screenwidth()
-        sh = self.widget.winfo_screenheight()
+        sw = self.root.winfo_screenwidth()
+        sh = self.root.winfo_screenheight()
 
-        # Screen boundary clamping
+        # Display edge clamping
         if x + w > sw - 12:
             x = max(10, px - w - 10)
         if y + h > sh - 12:
@@ -284,18 +372,29 @@ class MacOSTooltip:
 
         tw.geometry(f"+{x}+{y}")
 
-    def _hide(self):
-        if self.tip_window:
+
+def _cleanup_tooltips():
+    if TooltipManager._instance:
+        TooltipManager._instance.hide()
+
+
+atexit.register(_cleanup_tooltips)
+
+
+def add_tooltip(widget, text: str, delay: int = 400):
+    """Helper to attach a floating macOS tooltip to any widget using TooltipManager."""
+    try:
+        mgr = TooltipManager.get_instance()
+        if not mgr:
             try:
-                self.tip_window.destroy()
+                root = widget.winfo_toplevel()
+                mgr = TooltipManager.get_instance(root)
             except Exception:
-                pass
-            self.tip_window = None
-
-
-def add_tooltip(widget, text: str, delay: int = 400) -> MacOSTooltip:
-    """Helper to attach a floating macOS tooltip to any widget."""
-    return MacOSTooltip(widget, text, delay=delay)
+                mgr = None
+        if mgr:
+            mgr.register(widget, text, delay=delay)
+    except Exception:
+        pass
 
 
 # -----------------------------------------------------------------------------
@@ -328,6 +427,9 @@ class IISERBLoginApp(ctk.CTk):
         self.grid_columnconfigure(0, weight=0, minsize=230)
         self.grid_columnconfigure(1, weight=1)
         self.grid_rowconfigure(0, weight=1)
+
+        # Centralized Tooltip Manager singleton
+        self.tooltip_manager = TooltipManager(self)
 
         self._create_sidebar()
         self._create_main_content()
@@ -1200,6 +1302,9 @@ class IISERBLoginApp(ctk.CTk):
     # NAVIGATION HANDLER & THEME TOGGLE
     # =========================================================================
     def _select_tab(self, tab_name: str):
+        if hasattr(self, "tooltip_manager") and self.tooltip_manager:
+            self.tooltip_manager.hide()
+
         self.current_tab = tab_name
 
         nav_map = [
@@ -1291,6 +1396,8 @@ class IISERBLoginApp(ctk.CTk):
             return None
 
     def _on_window_close(self):
+        if hasattr(self, "tooltip_manager") and self.tooltip_manager:
+            self.tooltip_manager.hide()
         if self.tray_icon:
             self.withdraw()
             backend.send_notification("IISERB Login", "Minimized to system menu bar. Click tray icon to open.", urgency="low")
@@ -1306,9 +1413,19 @@ class IISERBLoginApp(ctk.CTk):
         ))
 
     def _quit_app(self):
+        if hasattr(self, "tooltip_manager") and self.tooltip_manager:
+            self.tooltip_manager.hide()
         if self.tray_icon:
             self.tray_icon.stop()
         self.after(0, self.destroy)
+
+    def destroy(self):
+        if hasattr(self, "tooltip_manager") and self.tooltip_manager:
+            self.tooltip_manager.hide()
+        try:
+            super().destroy()
+        except Exception:
+            pass
 
     # =========================================================================
     # REAL-TIME MONITORING & BACKGROUND TASKS
@@ -1725,13 +1842,49 @@ class IISERBLoginApp(ctk.CTk):
         self.after(0, lambda: (self.txt_diag.insert("end", text + "\n"), self.txt_diag.see("end")))
 
 
+_GUI_LOCK_FILE = None
+
+
+def _acquire_gui_lock():
+    global _GUI_LOCK_FILE
+    lock_path = os.path.join(tempfile.gettempdir(), f"iiserb_login_gui_{os.getuid()}.lock")
+    try:
+        f = open(lock_path, "w")
+        fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        _GUI_LOCK_FILE = f
+        return True
+    except (IOError, BlockingIOError):
+        return False
+
+
 def main():
     if len(sys.argv) > 1 and sys.argv[1] not in ["--gui", "-g"]:
         import cli
         sys.exit(cli.handle_cli(sys.argv[1:]))
 
+    if not _acquire_gui_lock():
+        try:
+            backend.send_notification(
+                "IISERB Login",
+                "Application is already running in background. Check your system tray or top bar.",
+                urgency="normal"
+            )
+        except Exception:
+            pass
+        print("An instance of IISERB Login GUI is already running. Exiting.", file=sys.stderr)
+        sys.exit(0)
+
     app = IISERBLoginApp()
-    app.mainloop()
+    try:
+        app.mainloop()
+    finally:
+        if hasattr(app, "tooltip_manager") and app.tooltip_manager:
+            app.tooltip_manager.hide()
+        if _GUI_LOCK_FILE:
+            try:
+                _GUI_LOCK_FILE.close()
+            except Exception:
+                pass
 
 
 if __name__ == "__main__":
